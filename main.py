@@ -1,10 +1,13 @@
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from flask import Flask, request
 import requests
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from dotenv import load_dotenv
+
+# Vietnam timezone (UTC+7)
+VIETNAM_TZ = timezone(timedelta(hours=7))
 
 load_dotenv()
 
@@ -82,7 +85,7 @@ def handle_finance_spent(amount, note):
     sheet = get_finance_sheet()
     finance_new_day_separator(sheet)
     today_str = get_today_date_str()
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
     
     # Get all values and check if last row has today's date and empty spent portion
     all_values = sheet.get_all_values()
@@ -105,7 +108,7 @@ def handle_finance_added(amount, note):
     sheet = get_finance_sheet()
     finance_new_day_separator(sheet)
     today_str = get_today_date_str()
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
     
     # Get all values and check if last row has today's date and empty added portion
     all_values = sheet.get_all_values()
@@ -194,7 +197,7 @@ def parse_and_handle(message_text, sender_id):
                     "For sleep: send 's' with nothing after it"
                 )
         else:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
             handle_health_entry(5, timestamp)
             send_message(sender_id, f"✅ Sleep logged: {timestamp}")
 
@@ -217,13 +220,13 @@ def parse_and_handle(message_text, sender_id):
 
     # ── HEALTH: j (jerk timestamp) ──
     elif keyword == "j":
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
         handle_health_entry(4, timestamp)
         send_message(sender_id, f"✅ Jerk logged: {timestamp}")
 
     # ── HEALTH: wu (wake up timestamp) ──
     elif keyword == "wu":
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
         handle_health_entry(6, timestamp)
         send_message(sender_id, f"✅ Wake up logged: {timestamp}")
 
