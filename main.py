@@ -45,7 +45,7 @@ def get_health_sheet():
 # ──────────────────────────────────────────────
 
 def get_today_date_str():
-    return datetime.now().strftime("%d-%m-%Y")
+    return datetime.now(VIETNAM_TZ).strftime("%d-%m-%Y")
 
 # ──────────────────────────────────────────────
 # FINANCE HELPERS
