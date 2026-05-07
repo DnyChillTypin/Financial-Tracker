@@ -73,32 +73,31 @@ def handle_messages():
                     if not message_text:
                         continue
 
-                    # Expected format: Amount Category [Optional Note]
-                    # Example: 15.50 food lunch
-                    parts = message_text.split(" ", 2)
+                    # Expected format: Amount [Optional Note]
+                    # Example: 15.50 lunch
+                    parts = message_text.split(" ", 1)
                     
-                    if len(parts) >= 2:
+                    if len(parts) >= 1:
                         try:
                             amount = float(parts[0])
-                            category = parts[1]
-                            note = parts[2] if len(parts) > 2 else ""
+                            note = parts[1] if len(parts) > 1 else ""
                             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                             # Append to Google Sheets
                             try:
                                 sheet = get_sheet()
-                                row = [timestamp, amount, category, note, message_text]
+                                row = [timestamp, amount, note]
                                 sheet.append_row(row)
-                                send_message(sender_id, f"✅ Logged: ${amount:.2f} for {category}")
+                                send_message(sender_id, f"✅ Logged: ${amount:.2f}")
                             except Exception as e:
                                 print(f"Google Sheets Error: {e}")
                                 send_message(sender_id, f"❌ Failed to save to Sheets. Error: {str(e)}")
 
                         except ValueError:
                             # The amount wasn't a valid number
-                            send_message(sender_id, "❌ Invalid format. Please use: [Amount] [Category] [Optional Note]\nExample: 15.50 food lunch")
+                            send_message(sender_id, "❌ Invalid format. Please use: [Amount] [Optional Note]\nExample: 15.50 lunch")
                     else:
-                        send_message(sender_id, "❌ Invalid format. Please use: [Amount] [Category] [Optional Note]\nExample: 15.50 food lunch")
+                        send_message(sender_id, "❌ Invalid format. Please use: [Amount] [Optional Note]\nExample: 15.50 lunch")
 
         return 'EVENT_RECEIVED', 200
     else:
