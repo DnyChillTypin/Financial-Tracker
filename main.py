@@ -70,18 +70,58 @@ def get_finance_date_col(sheet):
     last_date = get_last_finance_date(sheet)
     return today_str if last_date != today_str else ""
 
+def get_last_finance_row_index(sheet):
+    """Return the 1-based index of the last non-empty row, or 0 if sheet is empty."""
+    all_values = sheet.get_all_values()
+    for i in range(len(all_values) - 1, -1, -1):
+        if any(cell for cell in all_values[i]):
+            return i + 1
+    return 0
+
 def handle_finance_spent(amount, note):
     sheet = get_finance_sheet()
     finance_new_day_separator(sheet)
-    date_col = get_finance_date_col(sheet)
+    today_str = get_today_date_str()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Get all values and check if last row has today's date and empty spent portion
+    all_values = sheet.get_all_values()
+    if all_values:
+        last_row = all_values[-1]
+        # Check if last row has today's date (col 0) and spent portion is empty (cols 1-3)
+        if len(last_row) > 0 and last_row[0] == today_str and not last_row[1] and not last_row[2] and not last_row[3]:
+            # Update the last row instead of appending
+            last_row_index = len(all_values)
+            sheet.update_cell(last_row_index, 2, timestamp)  # time spent
+            sheet.update_cell(last_row_index, 3, amount)     # amount spent
+            sheet.update_cell(last_row_index, 4, note)       # note spent
+            return
+    
+    # Otherwise, append a new row
+    date_col = get_finance_date_col(sheet)
     sheet.append_row([date_col, timestamp, amount, note, "", "", ""])
 
 def handle_finance_added(amount, note):
     sheet = get_finance_sheet()
     finance_new_day_separator(sheet)
-    date_col = get_finance_date_col(sheet)
+    today_str = get_today_date_str()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Get all values and check if last row has today's date and empty added portion
+    all_values = sheet.get_all_values()
+    if all_values:
+        last_row = all_values[-1]
+        # Check if last row has today's date (col 0) and added portion is empty (cols 4-6)
+        if len(last_row) > 0 and last_row[0] == today_str and not last_row[4] and not last_row[5] and not last_row[6]:
+            # Update the last row instead of appending
+            last_row_index = len(all_values)
+            sheet.update_cell(last_row_index, 5, timestamp)  # time added
+            sheet.update_cell(last_row_index, 6, amount)     # amount added
+            sheet.update_cell(last_row_index, 7, note)       # note added
+            return
+    
+    # Otherwise, append a new row
+    date_col = get_finance_date_col(sheet)
     sheet.append_row([date_col, "", "", "", timestamp, amount, note])
 
 # ──────────────────────────────────────────────
