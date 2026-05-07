@@ -201,14 +201,14 @@ def parse_and_handle(message_text, sender_id):
             handle_health_entry(5, timestamp)
             send_message(sender_id, f"✅ Sleep logged: {timestamp}")
 
-    # ── HEALTH: w [float] ──
-    elif keyword == "w":
+    # ── HEALTH: we [float] ──
+    elif keyword == "we":
         try:
             weight = float(rest)
             handle_health_entry(2, weight)
             send_message(sender_id, f"✅ Weight logged: {weight} kg")
         except ValueError:
-            send_message(sender_id, "❌ Invalid format. Use: w [number]\nExample: w 70.5")
+            send_message(sender_id, "❌ Invalid format. Use: we [number]\nExample: we 70.5")
 
     # ── HEALTH: ex [string] ──
     elif keyword == "ex":
@@ -224,11 +224,14 @@ def parse_and_handle(message_text, sender_id):
         handle_health_entry(4, timestamp)
         send_message(sender_id, f"✅ Jerk logged: {timestamp}")
 
-    # ── HEALTH: wu (wake up timestamp) ──
-    elif keyword == "wu":
-        timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
-        handle_health_entry(6, timestamp)
-        send_message(sender_id, f"✅ Wake up logged: {timestamp}")
+    # ── HEALTH: w (wake up timestamp) ──
+    elif keyword == "w":
+        if not rest:
+            timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
+            handle_health_entry(6, timestamp)
+            send_message(sender_id, f"✅ Wake up logged: {timestamp}")
+        else:
+            send_message(sender_id, "❌ Invalid format. Use: w (with nothing after it)\nExample: w")
 
     # ── HEALTH: n [string] ──
     elif keyword == "n":
@@ -246,11 +249,11 @@ def parse_and_handle(message_text, sender_id):
             "  s [amount] [note] — log spending\n"
             "  a [amount] [note] — log income\n\n"
             "🏃 Health:\n"
-            "  w [float]   — weight\n"
+            "  we [float]  — weight\n"
             "  ex [string] — exercise\n"
             "  j           — jerk (logs timestamp)\n"
             "  s           — sleep (logs timestamp)\n"
-            "  wu          — wake up (logs timestamp)\n"
+            "  w           — wake up (logs timestamp)\n"
             "  n [string]  — notes"
         )
 
