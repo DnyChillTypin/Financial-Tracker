@@ -1,5 +1,4 @@
 import os
-import re
 from datetime import datetime
 from flask import Flask, request
 import requests
@@ -67,37 +66,36 @@ def handle_messages():
         for entry in data.get("entry", []):
             for messaging_event in entry.get("messaging", []):
                 if messaging_event.get("message"):
+        
+                    # Skip echo messages (bot's own sent messages)
+                    if messaging_event["message"].get("is_echo"):
+                        continue
+
                     sender_id = messaging_event["sender"]["id"]
                     message_text = messaging_event["message"].get("text", "").strip()
-                    
+
                     if not message_text:
                         continue
 
-                    # Expected format: Amount [Optional Note]
-                    # Example: 15.50 lunch
-                    parts = message_text.split(" ", 1)
-                    
-                    if len(parts) >= 1:
+                    # Expected format: [amount] [optional note with spaces]
+                    # Example: "15.50 coffee with friends"
+                    parts = message_text.split(" ", 1)  # Split on FIRST space only
+
+                    try:
+                        amount = float(parts[0])
+                        note = parts[1].strip() if len(parts) > 1 else ""
+                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
                         try:
-                            amount = float(parts[0])
-                            note = parts[1] if len(parts) > 1 else ""
-                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            sheet = get_sheet()
+                            sheet.append_row([timestamp, amount, note])
+                            send_message(sender_id, f"✅ Logged: ${amount:.2f}" + (f" — {note}" if note else ""))
+                        except Exception as e:
+                            print(f"Google Sheets Error: {e}")
+                            send_message(sender_id, f"❌ Failed to save to Sheets. Error: {str(e)}")
 
-                            # Append to Google Sheets
-                            try:
-                                sheet = get_sheet()
-                                row = [timestamp, amount, note]
-                                sheet.append_row(row)
-                                send_message(sender_id, f"✅ Logged: ${amount:.2f}")
-                            except Exception as e:
-                                print(f"Google Sheets Error: {e}")
-                                send_message(sender_id, f"❌ Failed to save to Sheets. Error: {str(e)}")
-
-                        except ValueError:
-                            # The amount wasn't a valid number
-                            send_message(sender_id, "❌ Invalid format. Please use: [Amount] [Optional Note]\nExample: 15.50 lunch")
-                    else:
-                        send_message(sender_id, "❌ Invalid format. Please use: [Amount] [Optional Note]\nExample: 15.50 lunch")
+                    except ValueError:
+                        send_message(sender_id, "❌ Invalid format. Please use: [Amount] [Optional Note]\nExample: 15.50 coffee with friends")
 
         return 'EVENT_RECEIVED', 200
     else:
