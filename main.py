@@ -1,4 +1,5 @@
 import os
+import time
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request
 import requests
@@ -12,6 +13,27 @@ VIETNAM_TZ = timezone(timedelta(hours=7))
 load_dotenv()
 
 app = Flask(__name__)
+
+# ──────────────────────────────────────────────
+# MESSAGE DEDUPLICATION
+# Prevents duplicate processing when Render cold-starts
+# and Facebook retries the webhook before getting a 200.
+# ──────────────────────────────────────────────
+_processed_messages = {}  # mid -> timestamp
+MESSAGE_TTL = 300  # keep message IDs for 5 minutes
+
+def _is_duplicate(mid):
+    """Return True if this message was already processed. Also cleans stale entries."""
+    now = time.time()
+    # Prune old entries
+    stale = [k for k, v in _processed_messages.items() if now - v > MESSAGE_TTL]
+    for k in stale:
+        del _processed_messages[k]
+    # Check duplicate
+    if mid in _processed_messages:
+        return True
+    _processed_messages[mid] = now
+    return False
 
 PAGE_ACCESS_TOKEN = os.getenv('PAGE_ACCESS_TOKEN')
 VERIFY_TOKEN = os.getenv('VERIFY_TOKEN')
@@ -46,6 +68,11 @@ def get_health_sheet():
 
 def get_today_date_str():
     return datetime.now(VIETNAM_TZ).strftime("%d-%m-%Y")
+
+def _add_note(sheet, row_index, col_index, timestamp):
+    """Add a 'Logged: <timestamp>' note to a cell. col_index is 1-based."""
+    col_letter = chr(ord('A') + col_index - 1)
+    sheet.update_note(f"{col_letter}{row_index}", f"Logged: {timestamp}")
 
 # ──────────────────────────────────────────────
 # FINANCE HELPERS
@@ -95,14 +122,23 @@ def handle_finance_spent(amount, note):
         if len(last_row) > 0 and last_row[0] == today_str and not last_row[1] and not last_row[2] and not last_row[3]:
             # Update the last row instead of appending
             last_row_index = len(all_values)
-            sheet.update_cell(last_row_index, 2, timestamp)  # time spent
+            sheet.update_cell(last_row_index, 2, "x")        # time spent → x
             sheet.update_cell(last_row_index, 3, amount)     # amount spent
             sheet.update_cell(last_row_index, 4, note)       # note spent
+            _add_note(sheet, last_row_index, 2, timestamp)
+            _add_note(sheet, last_row_index, 3, timestamp)
+            if note:
+                _add_note(sheet, last_row_index, 4, timestamp)
             return
     
     # Otherwise, append a new row
     date_col = get_finance_date_col(sheet)
-    sheet.append_row([date_col, timestamp, amount, note, "", "", ""])
+    sheet.append_row([date_col, "x", amount, note, "", "", ""])
+    row_index = len(sheet.get_all_values())
+    _add_note(sheet, row_index, 2, timestamp)
+    _add_note(sheet, row_index, 3, timestamp)
+    if note:
+        _add_note(sheet, row_index, 4, timestamp)
 
 def handle_finance_added(amount, note):
     sheet = get_finance_sheet()
@@ -118,14 +154,23 @@ def handle_finance_added(amount, note):
         if len(last_row) > 0 and last_row[0] == today_str and not last_row[4] and not last_row[5] and not last_row[6]:
             # Update the last row instead of appending
             last_row_index = len(all_values)
-            sheet.update_cell(last_row_index, 5, timestamp)  # time added
+            sheet.update_cell(last_row_index, 5, "x")        # time added → x
             sheet.update_cell(last_row_index, 6, amount)     # amount added
             sheet.update_cell(last_row_index, 7, note)       # note added
+            _add_note(sheet, last_row_index, 5, timestamp)
+            _add_note(sheet, last_row_index, 6, timestamp)
+            if note:
+                _add_note(sheet, last_row_index, 7, timestamp)
             return
     
     # Otherwise, append a new row
     date_col = get_finance_date_col(sheet)
-    sheet.append_row([date_col, "", "", "", timestamp, amount, note])
+    sheet.append_row([date_col, "", "", "", "x", amount, note])
+    row_index = len(sheet.get_all_values())
+    _add_note(sheet, row_index, 5, timestamp)
+    _add_note(sheet, row_index, 6, timestamp)
+    if note:
+        _add_note(sheet, row_index, 7, timestamp)
 
 # ──────────────────────────────────────────────
 # HEALTH HELPERS
@@ -157,9 +202,18 @@ def handle_health_entry(col_index, value):
     """
     sheet = get_health_sheet()
     ensure_health_today(sheet)
+    timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+    # Time-based entries store 'x'; the real timestamp goes in the cell note
+    is_time_entry = col_index in (4, 5, 6)
+    cell_value = "x" if is_time_entry else value
+
     row = [""] * 7
-    row[col_index - 1] = value
+    row[col_index - 1] = cell_value
     sheet.append_row(row)
+
+    row_index = len(sheet.get_all_values())
+    _add_note(sheet, row_index, col_index, timestamp)
 
 # ──────────────────────────────────────────────
 # MESSAGE PARSING
@@ -301,6 +355,10 @@ def handle_messages():
                 if messaging_event.get("message"):
 
                     if messaging_event["message"].get("is_echo"):
+                        continue
+
+                    mid = messaging_event["message"].get("mid")
+                    if mid and _is_duplicate(mid):
                         continue
 
                     sender_id = messaging_event["sender"]["id"]
