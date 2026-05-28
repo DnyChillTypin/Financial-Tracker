@@ -173,6 +173,214 @@ def handle_finance_added(amount, note):
         _add_note(sheet, row_index, 7, timestamp)
 
 # ──────────────────────────────────────────────
+# TOTAL HELPERS
+# ──────────────────────────────────────────────
+
+def _parse_date_str(date_str):
+    """Parse dd-mm-yyyy string to a date object."""
+    try:
+        return datetime.strptime(date_str, "%d-%m-%Y").date()
+    except ValueError:
+        return None
+
+
+def _date_in_range(date_str, start_date, end_date):
+    """Check if a dd-mm-yyyy string falls within [start_date, end_date]."""
+    d = _parse_date_str(date_str)
+    if d is None:
+        return False
+    return start_date <= d <= end_date
+
+
+def get_total_data(start_date, end_date):
+    """
+    Collect spent entries (finance) and jerk count (health) for a date range.
+    Returns (total_spent, spent_entries, jerk_count).
+    """
+    # -- Finance spent --
+    finance_sheet = get_finance_sheet()
+    fin_values = finance_sheet.get_all_values()
+    total_spent = 0.0
+    spent_entries = []  # list of (date_str, amount, note)
+    current_date = None
+
+    for row in fin_values:
+        if row[0] and row[0] != "Date":
+            current_date = row[0]
+        if current_date is None or not _date_in_range(current_date, start_date, end_date):
+            continue
+        if len(row) > 2 and row[2]:
+            try:
+                amt = float(row[2])
+                total_spent += amt
+                note = row[3] if len(row) > 3 and row[3] else ""
+                spent_entries.append((current_date, amt, note))
+            except ValueError:
+                pass
+
+    # -- Health jerk count --
+    try:
+        health_sheet = get_health_sheet()
+        health_values = health_sheet.get_all_values()
+    except Exception:
+        health_values = []
+
+    jerk_count = 0
+    current_date = None
+    for row in health_values:
+        if row[0] and row[0] != "Date":
+            current_date = row[0]
+        if current_date is None or not _date_in_range(current_date, start_date, end_date):
+            continue
+        # Jerk is col D (index 3)
+        if len(row) > 3 and row[3]:
+            jerk_count += 1
+
+    return total_spent, spent_entries, jerk_count
+
+
+def parse_total_args(rest):
+    """
+    Parse the arguments after 'total'.
+    Returns (start_date, end_date, label) or (None, None, error_msg).
+
+    Formats:
+      (empty)         → today
+      d dd/mm         → specific day (current year)
+      w dd/mm         → week containing that date
+      m dd/mm         → month of that date
+      y yyyy          → entire year
+      dd/mm/yy        → exact date
+    """
+    now = datetime.now(VIETNAM_TZ)
+    today = now.date()
+
+    if not rest:
+        return today, today, "today"
+
+    parts = rest.split(" ", 1)
+    mode = parts[0].lower()
+
+    # Direct date: total dd/mm/yy or dd/mm/yyyy
+    if "/" in mode or ("-" in mode and mode not in ("d", "w", "m", "y")):
+        arg = mode.replace("/", "-")
+        segs = arg.split("-")
+        try:
+            if len(segs) == 2:
+                day, month = int(segs[0]), int(segs[1])
+                d = datetime(now.year, month, day).date()
+                return d, d, d.strftime("%d/%m/%Y")
+            elif len(segs) == 3:
+                day, month, year = int(segs[0]), int(segs[1]), int(segs[2])
+                if year < 100:
+                    year += 2000
+                d = datetime(year, month, day).date()
+                return d, d, d.strftime("%d/%m/%Y")
+        except ValueError:
+            pass
+        return None, None, "❌ Invalid date. Use: dd/mm or dd/mm/yy"
+
+    # Modes: d, w, m, y
+    date_arg = parts[1].strip() if len(parts) > 1 else ""
+
+    if mode == "d":
+        if not date_arg:
+            return today, today, "today"
+        arg = date_arg.replace("/", "-")
+        segs = arg.split("-")
+        try:
+            day, month = int(segs[0]), int(segs[1])
+            d = datetime(now.year, month, day).date()
+            return d, d, d.strftime("%d/%m/%Y")
+        except (ValueError, IndexError):
+            return None, None, "❌ Invalid date. Use: total d dd/mm"
+
+    elif mode == "w":
+        if not date_arg:
+            # Current week (Monday–Sunday)
+            start = today - timedelta(days=today.weekday())
+            end = start + timedelta(days=6)
+            return start, end, f"week of {start.strftime('%d/%m')} – {end.strftime('%d/%m')}"
+        arg = date_arg.replace("/", "-")
+        segs = arg.split("-")
+        try:
+            day, month = int(segs[0]), int(segs[1])
+            d = datetime(now.year, month, day).date()
+            start = d - timedelta(days=d.weekday())
+            end = start + timedelta(days=6)
+            return start, end, f"week of {start.strftime('%d/%m')} – {end.strftime('%d/%m')}"
+        except (ValueError, IndexError):
+            return None, None, "❌ Invalid date. Use: total w dd/mm"
+
+    elif mode == "m":
+        if not date_arg:
+            # Current month
+            start = today.replace(day=1)
+            if today.month == 12:
+                end = today.replace(year=today.year + 1, month=1, day=1) - timedelta(days=1)
+            else:
+                end = today.replace(month=today.month + 1, day=1) - timedelta(days=1)
+            return start, end, today.strftime("%B %Y")
+        arg = date_arg.replace("/", "-")
+        segs = arg.split("-")
+        try:
+            month = int(segs[0])
+            start = datetime(now.year, month, 1).date()
+            if month == 12:
+                end = datetime(now.year + 1, 1, 1).date() - timedelta(days=1)
+            else:
+                end = datetime(now.year, month + 1, 1).date() - timedelta(days=1)
+            return start, end, start.strftime("%B %Y")
+        except (ValueError, IndexError):
+            return None, None, "❌ Invalid month. Use: total m [1-12]"
+
+    elif mode == "y":
+        if not date_arg:
+            year = now.year
+        else:
+            try:
+                year = int(date_arg)
+                if year < 100:
+                    year += 2000
+            except ValueError:
+                return None, None, "❌ Invalid year. Use: total y [yyyy]"
+        start = datetime(year, 1, 1).date()
+        end = datetime(year, 12, 31).date()
+        return start, end, str(year)
+
+    else:
+        return None, None, (
+            "❌ Unknown mode. Use:\n"
+            "  total           → today\n"
+            "  total d dd/mm   → specific day\n"
+            "  total w dd/mm   → that week\n"
+            "  total m [1-12]  → that month\n"
+            "  total y [yyyy]  → that year\n"
+            "  total dd/mm/yy  → exact date"
+        )
+
+
+def format_total_message(label, total_spent, spent_entries, jerk_count):
+    """Build a summary message showing spent + jerk."""
+    lines = [f"📊 Summary — {label}"]
+    lines.append("─" * 28)
+
+    if spent_entries:
+        lines.append(f"\n💸 Total Spent: ${total_spent:.2f}")
+        for date_str, amt, note in spent_entries:
+            entry = f"   • ${amt:.2f}"
+            if note:
+                entry += f" — {note}"
+            lines.append(entry)
+    else:
+        lines.append("\n💸 Total Spent: $0.00")
+
+    lines.append(f"\n🫣 Jerk count: {jerk_count}")
+    lines.append("─" * 28)
+
+    return "\n".join(lines)
+
+# ──────────────────────────────────────────────
 # HEALTH HELPERS
 # Health columns:
 # [Date] [Weight] [Exercises] [Jerk] [Sleep] [Wake Up] [Notes]
@@ -216,6 +424,39 @@ def handle_health_entry(col_index, value):
     _add_note(sheet, row_index, col_index, timestamp)
 
 # ──────────────────────────────────────────────
+# POSTBACK HANDLER (for persistent menu / ice breakers)
+# ──────────────────────────────────────────────
+
+def handle_postback(payload, sender_id):
+    """Handle postback payloads from persistent menu and ice breakers."""
+    timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+    if payload == "HEALTH_SLEEP":
+        handle_health_entry(5, timestamp)
+        send_message(sender_id, f"😴 Sleep logged: {timestamp}")
+    elif payload == "HEALTH_WAKEUP":
+        handle_health_entry(6, timestamp)
+        send_message(sender_id, f"☀️ Wake up logged: {timestamp}")
+    elif payload == "HEALTH_JERK":
+        handle_health_entry(4, timestamp)
+        send_message(sender_id, f"✅ Jerk logged: {timestamp}")
+    elif payload == "GET_STARTED":
+        send_message(sender_id,
+            "👋 Welcome! Here are the commands:\n\n"
+            "💰 Finance:\n"
+            "  s [amount] [note] — log spending\n"
+            "  a [amount] [note] — log income\n"
+            "  total             — daily/weekly/monthly total\n\n"
+            "🏃 Health:\n"
+            "  we [float]  — weight\n"
+            "  ex [string] — exercise\n"
+            "  n [string]  — notes\n\n"
+            "💡 Use the ≡ menu for quick sleep/wake/jerk buttons!"
+        )
+    else:
+        send_message(sender_id, "❓ Unknown action.")
+
+# ──────────────────────────────────────────────
 # MESSAGE PARSING
 # ──────────────────────────────────────────────
 
@@ -253,7 +494,17 @@ def parse_and_handle(message_text, sender_id):
         else:
             timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
             handle_health_entry(5, timestamp)
-            send_message(sender_id, f"✅ Sleep logged: {timestamp}")
+            send_message(sender_id, f"😴 Sleep logged: {timestamp}")
+
+    # ── TOTAL: total [d/w/m/y date] or total [dd/mm/yy] ──
+    elif keyword == "total":
+        start_date, end_date, label = parse_total_args(rest)
+        if start_date is None:
+            send_message(sender_id, label)  # label contains error msg
+        else:
+            total_spent, spent_entries, jerk_count = get_total_data(start_date, end_date)
+            msg = format_total_message(label, total_spent, spent_entries, jerk_count)
+            send_message(sender_id, msg)
 
     # ── HEALTH: we [float] ──
     elif keyword == "we":
@@ -283,7 +534,7 @@ def parse_and_handle(message_text, sender_id):
         if not rest:
             timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
             handle_health_entry(6, timestamp)
-            send_message(sender_id, f"✅ Wake up logged: {timestamp}")
+            send_message(sender_id, f"☀️ Wake up logged: {timestamp}")
         else:
             send_message(sender_id, "❌ Invalid format. Use: w (with nothing after it)\nExample: w")
 
@@ -295,20 +546,40 @@ def parse_and_handle(message_text, sender_id):
         else:
             send_message(sender_id, "❌ Invalid format. Use: n [note]\nExample: n felt tired today")
 
+    # ── LINK: get spreadsheet link ──
+    elif keyword == "link":
+        try:
+            spreadsheet = get_spreadsheet()
+            url = spreadsheet.url
+            send_message(sender_id, f"🔗 Here is your spreadsheet:\n{url}")
+        except Exception as e:
+            send_message(sender_id, f"❌ Error getting link: {str(e)}")
+
     # ── UNKNOWN ──
     else:
         send_message(sender_id,
             "❓ Unknown command. Here's what you can use:\n\n"
             "💰 Finance:\n"
             "  s [amount] [note] — log spending\n"
-            "  a [amount] [note] — log income\n\n"
+            "  a [amount] [note] — log income\n"
+            "  total             — summary (see below)\n\n"
+            "📊 Total modes:\n"
+            "  total             → today\n"
+            "  total d dd/mm     → specific day\n"
+            "  total w dd/mm     → that week\n"
+            "  total m [1-12]    → that month\n"
+            "  total y [yyyy]    → that year\n"
+            "  total dd/mm/yy    → exact date\n\n"
             "🏃 Health:\n"
             "  we [float]  — weight\n"
             "  ex [string] — exercise\n"
-            "  j           — jerk (logs timestamp)\n"
-            "  s           — sleep (logs timestamp)\n"
-            "  w           — wake up (logs timestamp)\n"
-            "  n [string]  — notes"
+            "  j           — jerk (timestamp)\n"
+            "  s           — sleep (timestamp)\n"
+            "  w           — wake up (timestamp)\n"
+            "  n [string]  — notes\n\n"
+            "🔧 Other:\n"
+            "  link        — get spreadsheet link\n\n"
+            "💡 Use the ≡ menu for quick sleep/wake!"
         )
 
 # ──────────────────────────────────────────────
@@ -327,6 +598,58 @@ def send_message(recipient_id, message_text):
         params=params, headers=headers, json=data
     )
     return response.status_code
+
+# ──────────────────────────────────────────────
+# MESSENGER PROFILE SETUP (ice breakers + persistent menu)
+# Call once: GET /setup-profile to configure.
+# ──────────────────────────────────────────────
+
+def _setup_messenger_profile():
+    """
+    One-time setup: configures persistent menu + ice breakers
+    so users can tap buttons instead of typing for sleep/wake/jerk.
+    """
+    url = f"https://graph.facebook.com/v19.0/me/messenger_profile"
+    params = {"access_token": PAGE_ACCESS_TOKEN}
+    headers = {"Content-Type": "application/json"}
+
+    payload = {
+        # Persistent menu: always visible ≡ button in chat
+        "persistent_menu": [
+            {
+                "locale": "default",
+                "composer_input_disabled": False,
+                "call_to_actions": [
+                    {"type": "postback", "title": "😴 Sleep",    "payload": "HEALTH_SLEEP"},
+                    {"type": "postback", "title": "☀️ Wake Up",  "payload": "HEALTH_WAKEUP"},
+                ]
+            }
+        ],
+        # Ice breakers: suggested questions shown at start of conversation
+        "ice_breakers": [
+            {
+                "locale": "default",
+                "call_to_actions": [
+                    {"question": "😴 Log Sleep",        "payload": "HEALTH_SLEEP"},
+                    {"question": "☀️ Log Wake Up",      "payload": "HEALTH_WAKEUP"},
+                ]
+            }
+        ],
+        # Get Started button (optional, shown first time)
+        "get_started": {
+            "payload": "GET_STARTED"
+        }
+    }
+
+    response = requests.post(url, params=params, headers=headers, json=payload)
+    return response.status_code, response.json()
+
+
+@app.route('/setup-profile', methods=['GET'])
+def setup_profile():
+    """Hit this endpoint once to configure persistent menu + ice breakers."""
+    status, result = _setup_messenger_profile()
+    return {"status": status, "result": result}, 200
 
 # ──────────────────────────────────────────────
 # WEBHOOK
@@ -352,6 +675,19 @@ def handle_messages():
     if data.get("object") == "page":
         for entry in data.get("entry", []):
             for messaging_event in entry.get("messaging", []):
+
+                # ── Handle postback taps (persistent menu / ice breakers) ──
+                if messaging_event.get("postback"):
+                    sender_id = messaging_event["sender"]["id"]
+                    payload = messaging_event["postback"].get("payload", "")
+                    try:
+                        handle_postback(payload, sender_id)
+                    except Exception as e:
+                        print(f"Postback error: {e}")
+                        send_message(sender_id, f"❌ Unexpected error: {str(e)}")
+                    continue
+
+                # ── Handle text messages ──
                 if messaging_event.get("message"):
 
                     if messaging_event["message"].get("is_echo"):
@@ -378,4 +714,4 @@ def handle_messages():
         return 'Not Found', 404
 
 if __name__ == '__main__':
-    app.run(port=5000, debug=True)
+    app.run(port=5000, debug=True)
