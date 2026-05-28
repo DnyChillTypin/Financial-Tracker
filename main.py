@@ -366,14 +366,14 @@ def format_total_message(label, total_spent, spent_entries, jerk_count):
     lines.append("─" * 28)
 
     if spent_entries:
-        lines.append(f"\n💸 Total Spent: ${total_spent:.2f}")
+        lines.append(f"\n💸 Total Spent: {total_spent:.3f}K")
         for date_str, amt, note in spent_entries:
-            entry = f"   • ${amt:.2f}"
+            entry = f"   • {amt:.3f}K"
             if note:
                 entry += f" — {note}"
             lines.append(entry)
     else:
-        lines.append("\n💸 Total Spent: $0.00")
+        lines.append("\n💸 Total Spent: 0.000K")
 
     lines.append(f"\n🫣 Jerk count: {jerk_count}")
     lines.append("─" * 28)
@@ -472,7 +472,7 @@ def parse_and_handle(message_text, sender_id):
             amount = float(sub[0])
             note = sub[1].strip() if len(sub) > 1 else ""
             handle_finance_added(amount, note)
-            send_message(sender_id, f"✅ Added: ${amount:.2f}" + (f" — {note}" if note else ""))
+            send_message(sender_id, f"✅ Added: {amount:.3f}K" + (f" — {note}" if note else ""))
         except ValueError:
             send_message(sender_id, "❌ Invalid format. Use: a [amount] [optional note]\nExample: a 500 salary")
 
@@ -484,11 +484,11 @@ def parse_and_handle(message_text, sender_id):
                 amount = float(sub[0])
                 note = sub[1].strip() if len(sub) > 1 else ""
                 handle_finance_spent(amount, note)
-                send_message(sender_id, f"✅ Spent: ${amount:.2f}" + (f" — {note}" if note else ""))
+                send_message(sender_id, f"✅ Spent: {amount:.3f}K" + (f" — {note}" if note else ""))
             except ValueError:
                 send_message(sender_id,
                     "❌ Invalid format.\n"
-                    "For spending: s [amount] [optional note] — e.g. s 15.50 lunch\n"
+                    "For spending: s [amount] [optional note] — e.g. s 15 lunch\n"
                     "For sleep: send 's' with nothing after it"
                 )
         else:
@@ -555,6 +555,19 @@ def parse_and_handle(message_text, sender_id):
         except Exception as e:
             send_message(sender_id, f"❌ Error getting link: {str(e)}")
 
+    # ── SETUP: configure persistent menu ──
+    elif keyword == "setup":
+        status, result = _setup_messenger_profile()
+        send_message(sender_id, f"⚙️ Profile setup ({status})\n\n⚠️ IMPORTANT: You MUST delete this conversation in Messenger and start a new one (or force-close the app) to see the ≡ hamburger menu.")
+
+    # ── MENU: quick replies ──
+    elif keyword == "menu":
+        quick_replies = [
+            {"content_type": "text", "title": "😴 Sleep", "payload": "HEALTH_SLEEP"},
+            {"content_type": "text", "title": "☀️ Wake Up", "payload": "HEALTH_WAKEUP"}
+        ]
+        send_message(sender_id, "👇 Tap to log:", quick_replies=quick_replies)
+
     # ── UNKNOWN ──
     else:
         send_message(sender_id,
@@ -562,37 +575,39 @@ def parse_and_handle(message_text, sender_id):
             "💰 Finance:\n"
             "  s [amount] [note] — log spending\n"
             "  a [amount] [note] — log income\n"
-            "  total             — summary (see below)\n\n"
-            "📊 Total modes:\n"
-            "  total             → today\n"
-            "  total d dd/mm     → specific day\n"
-            "  total w dd/mm     → that week\n"
-            "  total m [1-12]    → that month\n"
-            "  total y [yyyy]    → that year\n"
-            "  total dd/mm/yy    → exact date\n\n"
+            "  total             — summary\n\n"
             "🏃 Health:\n"
             "  we [float]  — weight\n"
             "  ex [string] — exercise\n"
-            "  j           — jerk (timestamp)\n"
-            "  s           — sleep (timestamp)\n"
-            "  w           — wake up (timestamp)\n"
             "  n [string]  — notes\n\n"
             "🔧 Other:\n"
-            "  link        — get spreadsheet link\n\n"
-            "💡 Use the ≡ menu for quick sleep/wake!"
+            "  link        — get spreadsheet link\n"
+            "  menu        — show sleep/wake buttons\n"
+            "  setup       — configure hamburger menu"
         )
 
 # ──────────────────────────────────────────────
 # MESSENGER
 # ──────────────────────────────────────────────
 
-def send_message(recipient_id, message_text):
+def send_message(recipient_id, message_text, quick_replies=None):
     params = {"access_token": PAGE_ACCESS_TOKEN}
     headers = {"Content-Type": "application/json"}
+    
+    if quick_replies is None:
+        quick_replies = [
+            {"content_type": "text", "title": "😴 Sleep", "payload": "HEALTH_SLEEP"},
+            {"content_type": "text", "title": "☀️ Wake Up", "payload": "HEALTH_WAKEUP"}
+        ]
+        
     data = {
         "recipient": {"id": recipient_id},
-        "message": {"text": message_text}
+        "message": {
+            "text": message_text,
+            "quick_replies": quick_replies
+        }
     }
+
     response = requests.post(
         "https://graph.facebook.com/v19.0/me/messages",
         params=params, headers=headers, json=data
@@ -698,6 +713,17 @@ def handle_messages():
                         continue
 
                     sender_id = messaging_event["sender"]["id"]
+
+                    # ── Handle quick replies ──
+                    if "quick_reply" in messaging_event["message"]:
+                        payload = messaging_event["message"]["quick_reply"]["payload"]
+                        try:
+                            handle_postback(payload, sender_id)
+                        except Exception as e:
+                            print(f"Quick reply error: {e}")
+                            send_message(sender_id, f"❌ Unexpected error: {str(e)}")
+                        continue
+
                     message_text = messaging_event["message"].get("text", "").strip()
 
                     if not message_text:
