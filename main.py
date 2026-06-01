@@ -461,6 +461,19 @@ def handle_postback(payload, sender_id):
 # ──────────────────────────────────────────────
 
 def parse_and_handle(message_text, sender_id):
+    # Failsafe for mobile app bugs where quick reply/ice breaker is sent as plain text
+    text_lower = message_text.strip().lower()
+    if text_lower == "😴 sleep":
+        timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        handle_health_entry(5, timestamp)
+        send_message(sender_id, f"😴 Sleep logged: {timestamp}")
+        return
+    elif text_lower == "☀️ wake up":
+        timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        handle_health_entry(6, timestamp)
+        send_message(sender_id, f"☀️ Wake up logged: {timestamp}")
+        return
+
     parts = message_text.strip().split(" ", 1)
     keyword = parts[0].lower()
     rest = parts[1].strip() if len(parts) > 1 else ""
