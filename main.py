@@ -197,11 +197,13 @@ def get_total_data(start_date, end_date):
     Collect spent entries (finance) and jerk count (health) for a date range.
     Returns (total_spent, spent_entries, jerk_count).
     """
-    # -- Finance spent --
+    # -- Finance spent & added --
     finance_sheet = get_finance_sheet()
     fin_values = finance_sheet.get_all_values()
     total_spent = 0.0
     spent_entries = []  # list of (date_str, amount, note)
+    total_added = 0.0
+    added_entries = []  # list of (date_str, amount, note)
     current_date = None
 
     for row in fin_values:
@@ -209,12 +211,24 @@ def get_total_data(start_date, end_date):
             current_date = row[0]
         if current_date is None or not _date_in_range(current_date, start_date, end_date):
             continue
+        
+        # Spent is col 3 (index 2)
         if len(row) > 2 and row[2]:
             try:
                 amt = float(row[2])
                 total_spent += amt
                 note = row[3] if len(row) > 3 and row[3] else ""
                 spent_entries.append((current_date, amt, note))
+            except ValueError:
+                pass
+                
+        # Added is col 6 (index 5)
+        if len(row) > 5 and row[5]:
+            try:
+                amt = float(row[5])
+                total_added += amt
+                note = row[6] if len(row) > 6 and row[6] else ""
+                added_entries.append((current_date, amt, note))
             except ValueError:
                 pass
 
@@ -226,17 +240,40 @@ def get_total_data(start_date, end_date):
         health_values = []
 
     jerk_count = 0
+    exercises = {}
     current_date = None
     for row in health_values:
         if row[0] and row[0] != "Date":
             current_date = row[0]
         if current_date is None or not _date_in_range(current_date, start_date, end_date):
             continue
+
+        # Exercise is col C (index 2)
+        if len(row) > 2 and row[2]:
+            ex_str = row[2]
+            parts = ex_str.strip().split(maxsplit=1)
+            if len(parts) == 2:
+                try:
+                    count = float(parts[0])
+                    if count.is_integer(): count = int(count)
+                    name = parts[1].lower().replace("-", " ")
+                except ValueError:
+                    count = 1
+                    name = ex_str.strip().lower().replace("-", " ")
+            else:
+                count = 1
+                name = ex_str.strip().lower().replace("-", " ")
+            
+            if name in exercises:
+                exercises[name] += count
+            else:
+                exercises[name] = count
+
         # Jerk is col D (index 3)
         if len(row) > 3 and row[3]:
             jerk_count += 1
 
-    return total_spent, spent_entries, jerk_count
+    return total_spent, spent_entries, total_added, added_entries, jerk_count, exercises
 
 
 def parse_total_args(rest):
@@ -360,8 +397,8 @@ def parse_total_args(rest):
         )
 
 
-def format_total_message(label, total_spent, spent_entries, jerk_count):
-    """Build a summary message showing spent + jerk."""
+def format_total_message(label, total_spent, spent_entries, total_added, added_entries, jerk_count, exercises):
+    """Build a summary message showing spent + added + jerk + exercises."""
     lines = [f"📊 Summary — {label}"]
     lines.append("─" * 28)
 
@@ -374,6 +411,21 @@ def format_total_message(label, total_spent, spent_entries, jerk_count):
             lines.append(entry)
     else:
         lines.append("\n💸 Total Spent: 0.000K")
+
+    if added_entries:
+        lines.append(f"\n💰 Total Added: {total_added:.3f}K")
+        for date_str, amt, note in added_entries:
+            entry = f"   • {amt:.3f}K"
+            if note:
+                entry += f" — {note}"
+            lines.append(entry)
+    else:
+        lines.append("\n💰 Total Added: 0.000K")
+
+    if exercises:
+        lines.append("\n💪 Exercises:")
+        for name, count in exercises.items():
+            lines.append(f"   • {count} {name}")
 
     lines.append(f"\n🫣 Jerk count: {jerk_count}")
     lines.append("─" * 28)
@@ -446,11 +498,19 @@ def handle_postback(payload, sender_id):
             "💰 Finance:\n"
             "  s [amount] [note] — log spending\n"
             "  a [amount] [note] — log income\n"
-            "  total             — daily/weekly/monthly total\n\n"
+            "  total               — today's summary\n"
+            "  total d [dd/mm]     — day summary\n"
+            "  total w [dd/mm]     — week summary\n"
+            "  total m [1-12]      — month summary\n"
+            "  total y [yyyy]      — year summary\n"
+            "  total [dd/mm/yy]    — exact date summary\n\n"
             "🏃 Health:\n"
             "  we [float]  — weight\n"
             "  ex [string] — exercise\n"
-            "  n [string]  — notes\n\n"
+            "  n [string]  — notes\n"
+            "  s           — log sleep\n"
+            "  w           — log wake up\n"
+            "  j           — log jerk\n\n"
             "💡 Use the ≡ menu for quick sleep/wake/jerk buttons!"
         )
     else:
@@ -515,8 +575,8 @@ def parse_and_handle(message_text, sender_id):
         if start_date is None:
             send_message(sender_id, label)  # label contains error msg
         else:
-            total_spent, spent_entries, jerk_count = get_total_data(start_date, end_date)
-            msg = format_total_message(label, total_spent, spent_entries, jerk_count)
+            total_spent, spent_entries, total_added, added_entries, jerk_count, exercises = get_total_data(start_date, end_date)
+            msg = format_total_message(label, total_spent, spent_entries, total_added, added_entries, jerk_count, exercises)
             send_message(sender_id, msg)
 
     # ── HEALTH: we [float] ──
@@ -588,11 +648,19 @@ def parse_and_handle(message_text, sender_id):
             "💰 Finance:\n"
             "  s [amount] [note] — log spending\n"
             "  a [amount] [note] — log income\n"
-            "  total             — summary\n\n"
+            "  total               — today's summary\n"
+            "  total d [dd/mm]     — day summary\n"
+            "  total w [dd/mm]     — week summary\n"
+            "  total m [1-12]      — month summary\n"
+            "  total y [yyyy]      — year summary\n"
+            "  total [dd/mm/yy]    — exact date summary\n\n"
             "🏃 Health:\n"
             "  we [float]  — weight\n"
             "  ex [string] — exercise\n"
-            "  n [string]  — notes\n\n"
+            "  n [string]  — notes\n"
+            "  s           — log sleep\n"
+            "  w           — log wake up\n"
+            "  j           — log jerk\n\n"
             "🔧 Other:\n"
             "  link        — get spreadsheet link\n"
             "  menu        — show sleep/wake buttons\n"
