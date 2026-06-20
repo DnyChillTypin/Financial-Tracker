@@ -681,19 +681,44 @@ def send_message(recipient_id, message_text, quick_replies=None):
             {"content_type": "text", "title": "☀️ Wake Up", "payload": "HEALTH_WAKEUP"}
         ]
         
-    data = {
-        "recipient": {"id": recipient_id},
-        "message": {
-            "text": message_text,
-            "quick_replies": quick_replies
-        }
-    }
+    # Facebook Messenger max message length is 2000 characters
+    max_length = 2000
+    if len(message_text) <= max_length:
+        messages = [message_text]
+    else:
+        messages = []
+        current_msg = ""
+        for line in message_text.split('\n'):
+            if len(current_msg) + len(line) + 1 > max_length:
+                if current_msg:
+                    messages.append(current_msg)
+                current_msg = line
+            else:
+                current_msg = current_msg + ('\n' + line if current_msg else line)
+        if current_msg:
+            messages.append(current_msg)
 
-    response = requests.post(
-        "https://graph.facebook.com/v19.0/me/messages",
-        params=params, headers=headers, json=data
-    )
-    return response.status_code
+    final_status = 200
+    for i, msg in enumerate(messages):
+        data = {
+            "recipient": {"id": recipient_id},
+            "message": {
+                "text": msg
+            }
+        }
+        # Only attach quick replies to the last message chunk
+        if i == len(messages) - 1:
+            data["message"]["quick_replies"] = quick_replies
+            
+        response = requests.post(
+            "https://graph.facebook.com/v19.0/me/messages",
+            params=params, headers=headers, json=data
+        )
+        if response.status_code != 200:
+            final_status = response.status_code
+            print(f"Error sending message chunk: {response.text}")
+            
+    return final_status
 
 # ──────────────────────────────────────────────
 # MESSENGER PROFILE SETUP (ice breakers + persistent menu)
