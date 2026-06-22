@@ -476,64 +476,123 @@ def handle_health_entry(col_index, value):
     _add_note(sheet, row_index, col_index, timestamp)
 
 # ──────────────────────────────────────────────
-# REMOVE LAST ENTRY
+# REMOVE LAST ENTRY + UNDO
 # ──────────────────────────────────────────────
+
+_last_removed = None  # stores data needed to undo the last rm
 
 def handle_remove_last():
     """
-    Delete the last non-empty, non-header row across both sheets.
-    Compares the timestamp note on the last data row of each sheet
-    and removes whichever was logged most recently.
-    Returns a human-readable result string.
+    Remove only the last individual entry from the most recent data row.
+    For finance: clears just the 'added' OR 'spent' cell group, not the whole row.
+    For health:  clears just the last non-empty data column.
+    Deletes the row only if it becomes completely empty after clearing.
+    Saves state into _last_removed so handle_undo() can restore it.
     """
+    global _last_removed
+
     finance_sheet = get_finance_sheet()
     health_sheet  = get_health_sheet()
-
     fin_values    = finance_sheet.get_all_values()
     health_values = health_sheet.get_all_values()
 
-    # Find last non-empty row index (1-based) for each sheet
-    def last_data_row(values, header_values=("Date",)):
+    def find_last_data_row(values):
+        """Return (0-based index, row list) of last row that has data beyond the date col."""
         for i in range(len(values) - 1, -1, -1):
             row = values[i]
-            if any(cell.strip() for cell in row) and row[0] not in header_values:
-                return i + 1  # 1-based
-        return None
+            if row[0] in ("", "Date"):
+                continue
+            if any(row[j].strip() for j in range(1, len(row))):
+                return i, list(row)
+        return None, None
 
-    fin_row_idx    = last_data_row(fin_values)
-    health_row_idx = last_data_row(health_values)
+    fin_i,    fin_row    = find_last_data_row(fin_values)
+    health_i, health_row = find_last_data_row(health_values)
 
-    if fin_row_idx is None and health_row_idx is None:
+    if fin_i is None and health_i is None:
         return "❌ Nothing to remove — both sheets are empty."
 
-    # Decide which sheet to remove from: prefer the one with a row,
-    # and if both have rows, pick whichever has the higher row index
-    # (simple heuristic: last appended = most recent).
-    # Users can always call rm again to remove the other sheet's entry.
-    if fin_row_idx is not None and health_row_idx is not None:
-        # Pick the sheet whose last row index is larger relative to total rows
-        # (both sheets grow independently, so compare raw index is not meaningful;
-        #  default to finance since that's the more common typo target)
-        target_sheet  = finance_sheet
-        target_row    = fin_row_idx
-        sheet_name    = "finance"
-        row_preview   = fin_values[fin_row_idx - 1]
-    elif fin_row_idx is not None:
-        target_sheet  = finance_sheet
-        target_row    = fin_row_idx
-        sheet_name    = "finance"
-        row_preview   = fin_values[fin_row_idx - 1]
+    # Pick sheet: finance first (most common typo target); health only if finance is empty
+    if fin_i is not None:
+        sheet, row_i, row_data, sheet_name = finance_sheet, fin_i, fin_row, "finance"
     else:
-        target_sheet  = health_sheet
-        target_row    = health_row_idx
-        sheet_name    = "health"
-        row_preview   = health_values[health_row_idx - 1]
+        sheet, row_i, row_data, sheet_name = health_sheet, health_i, health_row, "health"
 
-    # Build a short preview of what's being deleted
-    preview = " | ".join(c for c in row_preview if c.strip())
+    row_idx = row_i + 1  # gspread is 1-based
 
-    target_sheet.delete_rows(target_row)
-    return f"🗑️ Removed last {sheet_name} entry (row {target_row}):\n   {preview}"
+    # ── Determine WHICH cells to clear ──────────────────────────
+    if sheet_name == "finance":
+        # Finance cols (1-based): 1=Date, 2=time_s, 3=amt_s, 4=note_s,
+        #                          5=time_a, 6=amt_a,  7=note_a
+        # If 'added' portion is filled (col 6 = amount), that was the last entry.
+        # Otherwise the 'spent' portion (col 3 = amount) is the last entry.
+        has_added = len(row_data) > 5 and row_data[5].strip()
+        cols_to_clear = [5, 6, 7] if has_added else [2, 3, 4]
+    else:
+        # Health cols (1-based): 1=Date, 2=Weight, 3=Exercise, 4=Jerk,
+        #                         5=Sleep, 6=Wake Up, 7=Notes
+        # Clear the last non-empty data column.
+        last_col = None
+        for j in range(len(row_data) - 1, 0, -1):  # skip index 0 = date
+            if row_data[j].strip():
+                last_col = j + 1  # convert to 1-based
+                break
+        if last_col is None:
+            return "❌ Last row has no data to remove."
+        cols_to_clear = [last_col]
+
+    # Build preview of what's being cleared
+    preview_vals = [row_data[c - 1] for c in cols_to_clear if c - 1 < len(row_data)]
+    preview = " | ".join(v for v in preview_vals if v.strip())
+
+    # Clear the cells
+    for col in cols_to_clear:
+        sheet.update_cell(row_idx, col, "")
+
+    # Check if the row still has any data beyond the date column
+    updated_row = sheet.row_values(row_idx)
+    has_remaining = any(updated_row[j].strip() for j in range(1, len(updated_row)))
+
+    if not has_remaining:
+        # Row is now empty → delete it entirely
+        sheet.delete_rows(row_idx)
+        _last_removed = {
+            "sheet": sheet_name,
+            "action": "delete_row",
+            "row_index": row_idx,
+            "row_data": row_data,
+        }
+    else:
+        _last_removed = {
+            "sheet": sheet_name,
+            "action": "clear_cols",
+            "row_index": row_idx,
+            "cols_cleared": cols_to_clear,
+            "cleared_values": [row_data[c - 1] if c - 1 < len(row_data) else "" for c in cols_to_clear],
+        }
+
+    return f"🗑️ Removed: {preview}\nType 'undo' to restore."
+
+
+def handle_undo():
+    """Restore the entry that was cleared by the last rm/remove command."""
+    global _last_removed
+
+    if _last_removed is None:
+        return "❌ Nothing to undo."
+
+    entry = _last_removed
+    _last_removed = None  # one level of undo only
+
+    sheet = get_finance_sheet() if entry["sheet"] == "finance" else get_health_sheet()
+
+    if entry["action"] == "clear_cols":
+        for col, val in zip(entry["cols_cleared"], entry["cleared_values"]):
+            sheet.update_cell(entry["row_index"], col, val)
+    elif entry["action"] == "delete_row":
+        sheet.insert_row(entry["row_data"], entry["row_index"])
+
+    return f"↩️ Restored last {entry['sheet']} entry."
 
 # ──────────────────────────────────────────────
 # POSTBACK HANDLER (for persistent menu / ice breakers)
@@ -564,7 +623,8 @@ def handle_postback(payload, sender_id):
             "  total m [1-12]      — month summary\n"
             "  total y [yyyy]      — year summary\n"
             "  total [dd/mm/yy]    — exact date summary\n"
-            "  rm / remove         — undo last entry\n\n"
+            "  rm / remove         — remove last entry\n"
+            "  undo                 — restore removed entry\n\n"
             "🏃 Health:\n"
             "  we [float]  — weight\n"
             "  ex [string] — exercise\n"
@@ -688,6 +748,14 @@ def parse_and_handle(message_text, sender_id):
         except Exception as e:
             send_message(sender_id, f"❌ Error removing entry: {str(e)}")
 
+    # ── UNDO: restore last removed entry ──
+    elif keyword == "undo":
+        try:
+            result = handle_undo()
+            send_message(sender_id, result)
+        except Exception as e:
+            send_message(sender_id, f"❌ Error restoring entry: {str(e)}")
+
     # ── LINK: get spreadsheet link ──
     elif keyword == "link":
         try:
@@ -723,7 +791,8 @@ def parse_and_handle(message_text, sender_id):
             "  total m [1-12]      — month summary\n"
             "  total y [yyyy]      — year summary\n"
             "  total [dd/mm/yy]    — exact date summary\n"
-            "  rm / remove         — undo last entry\n\n"
+            "  rm / remove         — remove last entry\n"
+            "  undo                 — restore removed entry\n\n"
             "🏃 Health:\n"
             "  we [float]  — weight\n"
             "  ex [string] — exercise\n"
