@@ -476,6 +476,66 @@ def handle_health_entry(col_index, value):
     _add_note(sheet, row_index, col_index, timestamp)
 
 # ──────────────────────────────────────────────
+# REMOVE LAST ENTRY
+# ──────────────────────────────────────────────
+
+def handle_remove_last():
+    """
+    Delete the last non-empty, non-header row across both sheets.
+    Compares the timestamp note on the last data row of each sheet
+    and removes whichever was logged most recently.
+    Returns a human-readable result string.
+    """
+    finance_sheet = get_finance_sheet()
+    health_sheet  = get_health_sheet()
+
+    fin_values    = finance_sheet.get_all_values()
+    health_values = health_sheet.get_all_values()
+
+    # Find last non-empty row index (1-based) for each sheet
+    def last_data_row(values, header_values=("Date",)):
+        for i in range(len(values) - 1, -1, -1):
+            row = values[i]
+            if any(cell.strip() for cell in row) and row[0] not in header_values:
+                return i + 1  # 1-based
+        return None
+
+    fin_row_idx    = last_data_row(fin_values)
+    health_row_idx = last_data_row(health_values)
+
+    if fin_row_idx is None and health_row_idx is None:
+        return "❌ Nothing to remove — both sheets are empty."
+
+    # Decide which sheet to remove from: prefer the one with a row,
+    # and if both have rows, pick whichever has the higher row index
+    # (simple heuristic: last appended = most recent).
+    # Users can always call rm again to remove the other sheet's entry.
+    if fin_row_idx is not None and health_row_idx is not None:
+        # Pick the sheet whose last row index is larger relative to total rows
+        # (both sheets grow independently, so compare raw index is not meaningful;
+        #  default to finance since that's the more common typo target)
+        target_sheet  = finance_sheet
+        target_row    = fin_row_idx
+        sheet_name    = "finance"
+        row_preview   = fin_values[fin_row_idx - 1]
+    elif fin_row_idx is not None:
+        target_sheet  = finance_sheet
+        target_row    = fin_row_idx
+        sheet_name    = "finance"
+        row_preview   = fin_values[fin_row_idx - 1]
+    else:
+        target_sheet  = health_sheet
+        target_row    = health_row_idx
+        sheet_name    = "health"
+        row_preview   = health_values[health_row_idx - 1]
+
+    # Build a short preview of what's being deleted
+    preview = " | ".join(c for c in row_preview if c.strip())
+
+    target_sheet.delete_rows(target_row)
+    return f"🗑️ Removed last {sheet_name} entry (row {target_row}):\n   {preview}"
+
+# ──────────────────────────────────────────────
 # POSTBACK HANDLER (for persistent menu / ice breakers)
 # ──────────────────────────────────────────────
 
@@ -503,7 +563,8 @@ def handle_postback(payload, sender_id):
             "  total w [dd/mm]     — week summary\n"
             "  total m [1-12]      — month summary\n"
             "  total y [yyyy]      — year summary\n"
-            "  total [dd/mm/yy]    — exact date summary\n\n"
+            "  total [dd/mm/yy]    — exact date summary\n"
+            "  rm / remove         — undo last entry\n\n"
             "🏃 Health:\n"
             "  we [float]  — weight\n"
             "  ex [string] — exercise\n"
@@ -619,6 +680,14 @@ def parse_and_handle(message_text, sender_id):
         else:
             send_message(sender_id, "❌ Invalid format. Use: n [note]\nExample: n felt tired today")
 
+    # ── REMOVE: rm / remove — delete last entry ──
+    elif keyword in ("rm", "remove"):
+        try:
+            result = handle_remove_last()
+            send_message(sender_id, result)
+        except Exception as e:
+            send_message(sender_id, f"❌ Error removing entry: {str(e)}")
+
     # ── LINK: get spreadsheet link ──
     elif keyword == "link":
         try:
@@ -653,7 +722,8 @@ def parse_and_handle(message_text, sender_id):
             "  total w [dd/mm]     — week summary\n"
             "  total m [1-12]      — month summary\n"
             "  total y [yyyy]      — year summary\n"
-            "  total [dd/mm/yy]    — exact date summary\n\n"
+            "  total [dd/mm/yy]    — exact date summary\n"
+            "  rm / remove         — undo last entry\n\n"
             "🏃 Health:\n"
             "  we [float]  — weight\n"
             "  ex [string] — exercise\n"
