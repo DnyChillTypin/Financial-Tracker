@@ -66,6 +66,10 @@ def get_health_sheet():
 # SHARED HELPERS
 # ──────────────────────────────────────────────
 
+# Tracks the most recently logged entry so rm/remove can target it precisely.
+# Set by handle_finance_spent, handle_finance_added, handle_health_entry.
+_last_logged = None  # {"sheet": "finance"|"health", "row_index": int, "cols": [int]}
+
 def get_today_date_str():
     return datetime.now(VIETNAM_TZ).strftime("%d-%m-%Y")
 
@@ -109,6 +113,7 @@ def get_last_finance_row_index(sheet):
     return 0
 
 def handle_finance_spent(amount, note):
+    global _last_logged
     sheet = get_finance_sheet()
     finance_new_day_separator(sheet)
     today_str = get_today_date_str()
@@ -129,6 +134,7 @@ def handle_finance_spent(amount, note):
             _add_note(sheet, last_row_index, 3, timestamp)
             if note:
                 _add_note(sheet, last_row_index, 4, timestamp)
+            _last_logged = {"sheet": "finance", "row_index": last_row_index, "cols": [2, 3, 4]}
             return
     
     # Otherwise, append a new row
@@ -139,8 +145,10 @@ def handle_finance_spent(amount, note):
     _add_note(sheet, row_index, 3, timestamp)
     if note:
         _add_note(sheet, row_index, 4, timestamp)
+    _last_logged = {"sheet": "finance", "row_index": row_index, "cols": [2, 3, 4]}
 
 def handle_finance_added(amount, note):
+    global _last_logged
     sheet = get_finance_sheet()
     finance_new_day_separator(sheet)
     today_str = get_today_date_str()
@@ -161,6 +169,7 @@ def handle_finance_added(amount, note):
             _add_note(sheet, last_row_index, 6, timestamp)
             if note:
                 _add_note(sheet, last_row_index, 7, timestamp)
+            _last_logged = {"sheet": "finance", "row_index": last_row_index, "cols": [5, 6, 7]}
             return
     
     # Otherwise, append a new row
@@ -171,6 +180,7 @@ def handle_finance_added(amount, note):
     _add_note(sheet, row_index, 6, timestamp)
     if note:
         _add_note(sheet, row_index, 7, timestamp)
+    _last_logged = {"sheet": "finance", "row_index": row_index, "cols": [5, 6, 7]}
 
 # ──────────────────────────────────────────────
 # TOTAL HELPERS
@@ -460,6 +470,7 @@ def handle_health_entry(col_index, value):
     col_index (1-based):
     1=Date, 2=Weight, 3=Exercises, 4=Jerk, 5=Sleep, 6=Wake Up, 7=Notes
     """
+    global _last_logged
     sheet = get_health_sheet()
     ensure_health_today(sheet)
     timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
@@ -474,6 +485,7 @@ def handle_health_entry(col_index, value):
 
     row_index = len(sheet.get_all_values())
     _add_note(sheet, row_index, col_index, timestamp)
+    _last_logged = {"sheet": "health", "row_index": row_index, "cols": [col_index]}
 
 # ──────────────────────────────────────────────
 # REMOVE LAST ENTRY + UNDO
@@ -483,92 +495,57 @@ _last_removed = None  # stores data needed to undo the last rm
 
 def handle_remove_last():
     """
-    Remove only the last individual entry from the most recent data row.
-    For finance: clears just the 'added' OR 'spent' cell group, not the whole row.
-    For health:  clears just the last non-empty data column.
-    Deletes the row only if it becomes completely empty after clearing.
+    Remove the exact entry that was last logged (tracked by _last_logged).
+    Clears only the specific cells that were written, not the whole row.
+    Deletes the row entirely only if it becomes empty after clearing.
     Saves state into _last_removed so handle_undo() can restore it.
     """
-    global _last_removed
+    global _last_removed, _last_logged
 
-    finance_sheet = get_finance_sheet()
-    health_sheet  = get_health_sheet()
-    fin_values    = finance_sheet.get_all_values()
-    health_values = health_sheet.get_all_values()
+    if _last_logged is None:
+        return "❌ Nothing to remove — no recent entry tracked."
 
-    def find_last_data_row(values):
-        """Return (0-based index, row list) of last row that has data beyond the date col."""
-        for i in range(len(values) - 1, -1, -1):
-            row = values[i]
-            if row[0] in ("", "Date"):
-                continue
-            if any(row[j].strip() for j in range(1, len(row))):
-                return i, list(row)
-        return None, None
+    info = _last_logged
+    _last_logged = None  # consume it so you can't rm the same thing twice
 
-    fin_i,    fin_row    = find_last_data_row(fin_values)
-    health_i, health_row = find_last_data_row(health_values)
+    sheet = get_finance_sheet() if info["sheet"] == "finance" else get_health_sheet()
+    row_idx = info["row_index"]
+    cols = info["cols"]
 
-    if fin_i is None and health_i is None:
-        return "❌ Nothing to remove — both sheets are empty."
-
-    # Pick sheet: finance first (most common typo target); health only if finance is empty
-    if fin_i is not None:
-        sheet, row_i, row_data, sheet_name = finance_sheet, fin_i, fin_row, "finance"
-    else:
-        sheet, row_i, row_data, sheet_name = health_sheet, health_i, health_row, "health"
-
-    row_idx = row_i + 1  # gspread is 1-based
-
-    # ── Determine WHICH cells to clear ──────────────────────────
-    if sheet_name == "finance":
-        # Finance cols (1-based): 1=Date, 2=time_s, 3=amt_s, 4=note_s,
-        #                          5=time_a, 6=amt_a,  7=note_a
-        # If 'added' portion is filled (col 6 = amount), that was the last entry.
-        # Otherwise the 'spent' portion (col 3 = amount) is the last entry.
-        has_added = len(row_data) > 5 and row_data[5].strip()
-        cols_to_clear = [5, 6, 7] if has_added else [2, 3, 4]
-    else:
-        # Health cols (1-based): 1=Date, 2=Weight, 3=Exercise, 4=Jerk,
-        #                         5=Sleep, 6=Wake Up, 7=Notes
-        # Clear the last non-empty data column.
-        last_col = None
-        for j in range(len(row_data) - 1, 0, -1):  # skip index 0 = date
-            if row_data[j].strip():
-                last_col = j + 1  # convert to 1-based
-                break
-        if last_col is None:
-            return "❌ Last row has no data to remove."
-        cols_to_clear = [last_col]
+    # Read current row values for preview and undo backup
+    row_data = sheet.row_values(row_idx)
+    # Pad row_data to at least 7 columns
+    while len(row_data) < 7:
+        row_data.append("")
 
     # Build preview of what's being cleared
-    preview_vals = [row_data[c - 1] for c in cols_to_clear if c - 1 < len(row_data)]
-    preview = " | ".join(v for v in preview_vals if v.strip())
+    preview_vals = [row_data[c - 1] for c in cols if row_data[c - 1].strip()]
+    preview = " | ".join(preview_vals) if preview_vals else "(empty)"
 
     # Clear the cells
-    for col in cols_to_clear:
+    for col in cols:
         sheet.update_cell(row_idx, col, "")
 
     # Check if the row still has any data beyond the date column
     updated_row = sheet.row_values(row_idx)
-    has_remaining = any(updated_row[j].strip() for j in range(1, len(updated_row)))
+    has_remaining = any(c.strip() for c in updated_row[1:]) if len(updated_row) > 1 else False
 
     if not has_remaining:
         # Row is now empty → delete it entirely
         sheet.delete_rows(row_idx)
         _last_removed = {
-            "sheet": sheet_name,
+            "sheet": info["sheet"],
             "action": "delete_row",
             "row_index": row_idx,
             "row_data": row_data,
         }
     else:
         _last_removed = {
-            "sheet": sheet_name,
+            "sheet": info["sheet"],
             "action": "clear_cols",
             "row_index": row_idx,
-            "cols_cleared": cols_to_clear,
-            "cleared_values": [row_data[c - 1] if c - 1 < len(row_data) else "" for c in cols_to_clear],
+            "cols_cleared": cols,
+            "cleared_values": [row_data[c - 1] for c in cols],
         }
 
     return f"🗑️ Removed: {preview}\nType 'undo' to restore."
