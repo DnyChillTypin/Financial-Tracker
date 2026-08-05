@@ -66,9 +66,10 @@ def get_health_sheet():
 # SHARED HELPERS
 # ──────────────────────────────────────────────
 
-# Tracks the most recently logged entry so rm/remove can target it precisely.
+# Stack of logged entries so rm/remove can walk backwards through history.
+# Each entry: {"sheet": "finance"|"health", "row_index": int, "cols": [int]}
 # Set by handle_finance_spent, handle_finance_added, handle_health_entry.
-_last_logged = None  # {"sheet": "finance"|"health", "row_index": int, "cols": [int]}
+_logged_stack = []
 
 def get_today_date_str():
     return datetime.now(VIETNAM_TZ).strftime("%d-%m-%Y")
@@ -113,7 +114,6 @@ def get_last_finance_row_index(sheet):
     return 0
 
 def handle_finance_spent(amount, note):
-    global _last_logged
     sheet = get_finance_sheet()
     finance_new_day_separator(sheet)
     today_str = get_today_date_str()
@@ -134,7 +134,7 @@ def handle_finance_spent(amount, note):
             _add_note(sheet, last_row_index, 3, timestamp)
             if note:
                 _add_note(sheet, last_row_index, 4, timestamp)
-            _last_logged = {"sheet": "finance", "row_index": last_row_index, "cols": [2, 3, 4]}
+            _logged_stack.append({"sheet": "finance", "row_index": last_row_index, "cols": [2, 3, 4]})
             return
     
     # Otherwise, append a new row
@@ -145,10 +145,9 @@ def handle_finance_spent(amount, note):
     _add_note(sheet, row_index, 3, timestamp)
     if note:
         _add_note(sheet, row_index, 4, timestamp)
-    _last_logged = {"sheet": "finance", "row_index": row_index, "cols": [2, 3, 4]}
+    _logged_stack.append({"sheet": "finance", "row_index": row_index, "cols": [2, 3, 4]})
 
 def handle_finance_added(amount, note):
-    global _last_logged
     sheet = get_finance_sheet()
     finance_new_day_separator(sheet)
     today_str = get_today_date_str()
@@ -169,7 +168,7 @@ def handle_finance_added(amount, note):
             _add_note(sheet, last_row_index, 6, timestamp)
             if note:
                 _add_note(sheet, last_row_index, 7, timestamp)
-            _last_logged = {"sheet": "finance", "row_index": last_row_index, "cols": [5, 6, 7]}
+            _logged_stack.append({"sheet": "finance", "row_index": last_row_index, "cols": [5, 6, 7]})
             return
     
     # Otherwise, append a new row
@@ -180,7 +179,7 @@ def handle_finance_added(amount, note):
     _add_note(sheet, row_index, 6, timestamp)
     if note:
         _add_note(sheet, row_index, 7, timestamp)
-    _last_logged = {"sheet": "finance", "row_index": row_index, "cols": [5, 6, 7]}
+    _logged_stack.append({"sheet": "finance", "row_index": row_index, "cols": [5, 6, 7]})
 
 # ──────────────────────────────────────────────
 # TOTAL HELPERS
@@ -473,7 +472,6 @@ def handle_health_entry(col_index, value):
     Tries to fill an existing today's row where the target column is empty.
     Only appends a new row if no such row is available.
     """
-    global _last_logged
     sheet = get_health_sheet()
     ensure_health_today(sheet)
     timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
@@ -512,7 +510,7 @@ def handle_health_entry(col_index, value):
         row_index = len(sheet.get_all_values())
 
     _add_note(sheet, row_index, col_index, timestamp)
-    _last_logged = {"sheet": "health", "row_index": row_index, "cols": [col_index]}
+    _logged_stack.append({"sheet": "health", "row_index": row_index, "cols": [col_index]})
 
 # ──────────────────────────────────────────────
 # REMOVE LAST ENTRY + UNDO
@@ -522,18 +520,18 @@ _last_removed = None  # stores data needed to undo the last rm
 
 def handle_remove_last():
     """
-    Remove the exact entry that was last logged (tracked by _last_logged).
+    Remove the most recent logged entry by popping from _logged_stack.
     Clears only the specific cells that were written, not the whole row.
     Deletes the row entirely only if it becomes empty after clearing.
     Saves state into _last_removed so handle_undo() can restore it.
+    Can be called repeatedly to keep removing entries backwards.
     """
-    global _last_removed, _last_logged
+    global _last_removed
 
-    if _last_logged is None:
+    if not _logged_stack:
         return "❌ Nothing to remove — no recent entry tracked."
 
-    info = _last_logged
-    _last_logged = None  # consume it so you can't rm the same thing twice
+    info = _logged_stack.pop()
 
     sheet = get_finance_sheet() if info["sheet"] == "finance" else get_health_sheet()
     row_idx = info["row_index"]
@@ -565,7 +563,13 @@ def handle_remove_last():
             "action": "delete_row",
             "row_index": row_idx,
             "row_data": row_data,
+            "cols": cols,
         }
+        # Adjust row indices in the stack for entries on the same sheet
+        # that are below the deleted row (they shifted up by 1)
+        for entry in _logged_stack:
+            if entry["sheet"] == info["sheet"] and entry["row_index"] > row_idx:
+                entry["row_index"] -= 1
     else:
         _last_removed = {
             "sheet": info["sheet"],
@@ -579,7 +583,11 @@ def handle_remove_last():
 
 
 def handle_undo():
-    """Restore the entry that was cleared by the last rm/remove command."""
+    """
+    Restore the entry that was cleared by the last rm/remove command.
+    Can only be used after an rm — not on its own.
+    Pushes the restored entry back onto the stack.
+    """
     global _last_removed
 
     if _last_removed is None:
@@ -593,8 +601,25 @@ def handle_undo():
     if entry["action"] == "clear_cols":
         for col, val in zip(entry["cols_cleared"], entry["cleared_values"]):
             sheet.update_cell(entry["row_index"], col, val)
+        # Push the restored entry back onto the stack
+        _logged_stack.append({
+            "sheet": entry["sheet"],
+            "row_index": entry["row_index"],
+            "cols": entry["cols_cleared"],
+        })
     elif entry["action"] == "delete_row":
         sheet.insert_row(entry["row_data"], entry["row_index"])
+        # Adjust row indices in the stack for entries on the same sheet
+        # that are at or below the re-inserted row (they shifted down by 1)
+        for e in _logged_stack:
+            if e["sheet"] == entry["sheet"] and e["row_index"] >= entry["row_index"]:
+                e["row_index"] += 1
+        # Push the restored entry back onto the stack
+        _logged_stack.append({
+            "sheet": entry["sheet"],
+            "row_index": entry["row_index"],
+            "cols": entry["cols"],
+        })
 
     return f"↩️ Restored last {entry['sheet']} entry."
 
