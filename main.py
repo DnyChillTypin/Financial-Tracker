@@ -455,14 +455,24 @@ def get_last_health_date(sheet):
             return row[0]
     return None
 
+def _next_empty_row(sheet):
+    """Return the 1-based index of the first completely empty row at the bottom."""
+    all_values = sheet.get_all_values()
+    return len(all_values) + 1
+
 def ensure_health_today(sheet):
     """If today's date row doesn't exist yet, add separator + date row."""
     today_str = get_today_date_str()
     last_date = get_last_health_date(sheet)
     if last_date != today_str:
         if last_date is not None:
-            sheet.append_row([""] * 7)
-        sheet.append_row([today_str, "", "", "", "", "", ""])
+            # Blank separator row — write explicitly to column A to avoid
+            # Google Sheets API table-detection placing it in the wrong column.
+            sep_row = _next_empty_row(sheet)
+            sheet.update(f'A{sep_row}', [[""]])
+        date_row = _next_empty_row(sheet)
+        sheet.update(f'A{date_row}:G{date_row}',
+                     [[today_str, "", "", "", "", "", ""]])
 
 def handle_health_entry(col_index, value):
     """
@@ -503,11 +513,11 @@ def handle_health_entry(col_index, value):
         sheet.update_cell(target_row_index, col_index, cell_value)
         row_index = target_row_index
     else:
-        # No suitable row found — append a new one
-        row = [""] * 7
-        row[col_index - 1] = cell_value
-        sheet.append_row(row)
-        row_index = len(sheet.get_all_values())
+        # No suitable row found — write a new one at explicit position
+        new_row = _next_empty_row(sheet)
+        col_letter = chr(ord('A') + col_index - 1)
+        sheet.update(f'{col_letter}{new_row}', [[cell_value]])
+        row_index = new_row
 
     _add_note(sheet, row_index, col_index, timestamp)
     _logged_stack.append({"sheet": "health", "row_index": row_index, "cols": [col_index]})
@@ -521,8 +531,10 @@ _last_removed = None  # stores data needed to undo the last rm
 def handle_remove_last():
     """
     Remove the most recent logged entry by popping from _logged_stack.
-    Clears only the specific cells that were written, not the whole row.
-    Deletes the row entirely only if it becomes empty after clearing.
+    - Health entries: always delete the entire row (removes cell notes too,
+      since there is only 1 entry per row on the health sheet).
+    - Finance entries: clear only the specific cells; delete the row if it
+      becomes empty.
     Saves state into _last_removed so handle_undo() can restore it.
     Can be called repeatedly to keep removing entries backwards.
     """
@@ -547,37 +559,50 @@ def handle_remove_last():
     preview_vals = [row_data[c - 1] for c in cols if row_data[c - 1].strip()]
     preview = " | ".join(preview_vals) if preview_vals else "(empty)"
 
-    # Clear the cells
-    for col in cols:
-        sheet.update_cell(row_idx, col, "")
-
-    # Check if the row still has any data beyond the date column
-    updated_row = sheet.row_values(row_idx)
-    has_remaining = any(c.strip() for c in updated_row[1:]) if len(updated_row) > 1 else False
-
-    if not has_remaining:
-        # Row is now empty → delete it entirely
+    if info["sheet"] == "health":
+        # Health: always delete the entire row (removes values + cell notes)
         sheet.delete_rows(row_idx)
         _last_removed = {
-            "sheet": info["sheet"],
+            "sheet": "health",
             "action": "delete_row",
             "row_index": row_idx,
             "row_data": row_data,
             "cols": cols,
         }
-        # Adjust row indices in the stack for entries on the same sheet
-        # that are below the deleted row (they shifted up by 1)
+        # Adjust row indices in the stack for health entries below the deleted row
         for entry in _logged_stack:
-            if entry["sheet"] == info["sheet"] and entry["row_index"] > row_idx:
+            if entry["sheet"] == "health" and entry["row_index"] > row_idx:
                 entry["row_index"] -= 1
     else:
-        _last_removed = {
-            "sheet": info["sheet"],
-            "action": "clear_cols",
-            "row_index": row_idx,
-            "cols_cleared": cols,
-            "cleared_values": [row_data[c - 1] for c in cols],
-        }
+        # Finance: clear only the specific cells
+        for col in cols:
+            sheet.update_cell(row_idx, col, "")
+
+        # Check if the row still has any data beyond the date column
+        updated_row = sheet.row_values(row_idx)
+        has_remaining = any(c.strip() for c in updated_row[1:]) if len(updated_row) > 1 else False
+
+        if not has_remaining:
+            # Row is now empty → delete it entirely
+            sheet.delete_rows(row_idx)
+            _last_removed = {
+                "sheet": "finance",
+                "action": "delete_row",
+                "row_index": row_idx,
+                "row_data": row_data,
+                "cols": cols,
+            }
+            for entry in _logged_stack:
+                if entry["sheet"] == "finance" and entry["row_index"] > row_idx:
+                    entry["row_index"] -= 1
+        else:
+            _last_removed = {
+                "sheet": "finance",
+                "action": "clear_cols",
+                "row_index": row_idx,
+                "cols_cleared": cols,
+                "cleared_values": [row_data[c - 1] for c in cols],
+            }
 
     return f"🗑️ Removed: {preview}\nType 'undo' to restore."
 
@@ -608,9 +633,9 @@ def handle_undo():
             "cols": entry["cols_cleared"],
         })
     elif entry["action"] == "delete_row":
+        # Re-insert the full row at its original position
         sheet.insert_row(entry["row_data"], entry["row_index"])
         # Adjust row indices in the stack for entries on the same sheet
-        # that are at or below the re-inserted row (they shifted down by 1)
         for e in _logged_stack:
             if e["sheet"] == entry["sheet"] and e["row_index"] >= entry["row_index"]:
                 e["row_index"] += 1
