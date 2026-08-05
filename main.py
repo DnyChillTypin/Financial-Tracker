@@ -469,6 +469,9 @@ def handle_health_entry(col_index, value):
     """
     col_index (1-based):
     1=Date, 2=Weight, 3=Exercises, 4=Jerk, 5=Sleep, 6=Wake Up, 7=Notes
+
+    Tries to fill an existing today's row where the target column is empty.
+    Only appends a new row if no such row is available.
     """
     global _last_logged
     sheet = get_health_sheet()
@@ -479,11 +482,35 @@ def handle_health_entry(col_index, value):
     is_time_entry = col_index in (4, 5, 6)
     cell_value = "x" if is_time_entry else value
 
-    row = [""] * 7
-    row[col_index - 1] = cell_value
-    sheet.append_row(row)
+    today_str = get_today_date_str()
+    all_values = sheet.get_all_values()
 
-    row_index = len(sheet.get_all_values())
+    # Scan backwards for a today's row where col_index cell is empty
+    target_row_index = None
+    for i in range(len(all_values) - 1, -1, -1):
+        row_data = all_values[i]
+        # Stop scanning once we've passed today's date block
+        if row_data[0] and row_data[0] != today_str:
+            break
+        # Must be within today's block (date col is today or empty)
+        if row_data[0] == today_str or row_data[0] == "":
+            # Check if the target column is empty in this row
+            col_val = row_data[col_index - 1] if len(row_data) >= col_index else ""
+            if not col_val.strip():
+                target_row_index = i + 1  # 1-based
+                break
+
+    if target_row_index is not None:
+        # Update in-place
+        sheet.update_cell(target_row_index, col_index, cell_value)
+        row_index = target_row_index
+    else:
+        # No suitable row found — append a new one
+        row = [""] * 7
+        row[col_index - 1] = cell_value
+        sheet.append_row(row)
+        row_index = len(sheet.get_all_values())
+
     _add_note(sheet, row_index, col_index, timestamp)
     _last_logged = {"sheet": "health", "row_index": row_index, "cols": [col_index]}
 
