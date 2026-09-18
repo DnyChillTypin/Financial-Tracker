@@ -114,11 +114,20 @@ All messages arriving from Facebook Messenger are routed to `parse_and_handle(me
 ### 6. Currency Formatting
 - Currency amounts are formatted with `.3f` representing thousands (e.g. `15.000K` for 15K).
 
+### 7. Sleep & Wake Up Alternation and Duplicate Handling
+- Sleep (Col E, 5) and Wake Up (Col F, 6) logs must strictly alternate.
+- **Duplicate within 4 hours** (Sleep after Sleep <= 4h, or Wake Up after Wake Up <= 4h): Overwrites the previous timestamp note in place (`E{row}` or `F{row}`) and notifies the user with the updated time and previous overwritten time.
+- **Duplicate after > 4 hours** (Sleep after Sleep > 4h, or Wake Up after Wake Up > 4h): Logs as a new entry (new row) and alerts the user with a warning that the alternating event was missed (e.g. `⚠️ Warning: Missing Wake Up log before this Sleep.`).
+- **Alternating event**: Logs normally as an in-place fill on today's row or appends a new row.
+
 ---
 
 ## 6. Testing & Development Guidelines
 
-- **Unit Testing**: Run `python test_parse.py` to test argument parsing logic for `total`.
+- **Unit Testing**:
+  - Run `python test_parse.py` to test argument parsing logic for `total`.
+  - Run `python test_sleep_wake.py` to test sleep/wake alternation and duplicate window handling.
 - **Local Run**: `python main.py` runs Flask on port 5000 in debug mode.
 - **Tunneling**: For local webhook testing with Facebook, use a tunnel like Cloudflare Tunnel (`cloudflared`) or ngrok.
 - **Preserving Comments**: When modifying `main.py`, preserve all section banners and existing docstrings.
+

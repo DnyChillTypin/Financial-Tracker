@@ -522,6 +522,148 @@ def handle_health_entry(col_index, value):
     _add_note(sheet, row_index, col_index, timestamp)
     _logged_stack.append({"sheet": "health", "row_index": row_index, "cols": [col_index]})
 
+def _parse_note_timestamp(note_text):
+    """Extract datetime from 'Logged: YYYY-MM-DD HH:MM:SS' note text."""
+    if not note_text:
+        return None
+    first_line = note_text.strip().split("\n")[0]
+    cleaned = first_line.replace("Logged:", "").strip()
+    try:
+        dt = datetime.strptime(cleaned, "%Y-%m-%d %H:%M:%S")
+        return dt.replace(tzinfo=VIETNAM_TZ)
+    except ValueError:
+        return None
+
+def _get_note(sheet, row_index, col_index):
+    """Safely get cell note from sheet."""
+    col_letter = chr(ord('A') + col_index - 1)
+    cell_a1 = f"{col_letter}{row_index}"
+    try:
+        if hasattr(sheet, 'get_note'):
+            return sheet.get_note(cell_a1) or ""
+    except Exception as e:
+        print(f"Warning: Failed to get note for {cell_a1}: {e}")
+    return ""
+
+def _get_row_date(all_values, row_idx):
+    """row_idx is 1-based. Finds the date for row_idx by looking backwards in Col A."""
+    for i in range(row_idx - 1, 0, -1):
+        if i < len(all_values) and all_values[i][0] and all_values[i][0] != "Date":
+            d = _parse_date_str(all_values[i][0])
+            if d:
+                return datetime(d.year, d.month, d.day, tzinfo=VIETNAM_TZ)
+    return None
+
+def get_last_sleep_wake_event(sheet):
+    """
+    Find the most recent sleep or wake up log in the health sheet.
+    Returns (event_type, event_dt, row_index, col_index) or None.
+    event_type is 'sleep' (col 5) or 'wake' (col 6).
+    """
+    all_values = sheet.get_all_values()
+    if len(all_values) <= 1:
+        return None
+
+    last_sleep_row = None
+    last_wake_row = None
+
+    for i in range(len(all_values) - 1, 0, -1):
+        row = all_values[i]
+        if last_sleep_row is None and len(row) >= 5 and row[4].strip():
+            last_sleep_row = i + 1
+        if last_wake_row is None and len(row) >= 6 and row[5].strip():
+            last_wake_row = i + 1
+        if last_sleep_row is not None and last_wake_row is not None:
+            break
+
+    if last_sleep_row is None and last_wake_row is None:
+        return None
+
+    sleep_dt = None
+    wake_dt = None
+
+    if last_sleep_row is not None:
+        sleep_note = _get_note(sheet, last_sleep_row, 5)
+        sleep_dt = _parse_note_timestamp(sleep_note) or _get_row_date(all_values, last_sleep_row)
+
+    if last_wake_row is not None:
+        wake_note = _get_note(sheet, last_wake_row, 6)
+        wake_dt = _parse_note_timestamp(wake_note) or _get_row_date(all_values, last_wake_row)
+
+    # Determine which event occurred later
+    if sleep_dt and wake_dt:
+        if sleep_dt >= wake_dt:
+            return ('sleep', sleep_dt, last_sleep_row, 5)
+        else:
+            return ('wake', wake_dt, last_wake_row, 6)
+    elif sleep_dt:
+        return ('sleep', sleep_dt, last_sleep_row, 5)
+    elif wake_dt:
+        return ('wake', wake_dt, last_wake_row, 6)
+    else:
+        # Fallback to row numbers if datetimes couldn't be resolved
+        if last_sleep_row is not None and (last_wake_row is None or last_sleep_row >= last_wake_row):
+            return ('sleep', None, last_sleep_row, 5)
+        else:
+            return ('wake', None, last_wake_row, 6)
+
+def handle_sleep_wake_log(action_type, sender_id):
+    """
+    Handle logging of sleep or wake up with alternation check and 4-hour duplicate handling.
+    action_type: 'sleep' (col 5) or 'wake' (col 6)
+    """
+    sheet = get_health_sheet()
+    now = datetime.now(VIETNAM_TZ)
+    timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+
+    col_index = 5 if action_type == 'sleep' else 6
+    emoji = "😴" if action_type == 'sleep' else "☀️"
+    label = "Sleep" if action_type == 'sleep' else "Wake up"
+    opposite_label = "Wake Up" if action_type == 'sleep' else "Sleep"
+
+    last_event_info = get_last_sleep_wake_event(sheet)
+
+    if last_event_info:
+        last_type, last_dt, last_row, last_col = last_event_info
+
+        # Check if consecutive same-type log (sleep after sleep, or wake after wake)
+        if last_type == action_type:
+            diff_hours = None
+            if last_dt:
+                diff_seconds = (now - last_dt).total_seconds()
+                diff_hours = diff_seconds / 3600.0
+
+            # Case 1: Within 4 hours -> overwrite previous timestamp
+            if diff_hours is not None and 0 <= diff_hours <= 4.0:
+                sheet.update_cell(last_row, last_col, "x")
+                _add_note(sheet, last_row, last_col, timestamp)
+
+                # Format previous time for display
+                if last_dt.date() == now.date():
+                    prev_str = last_dt.strftime("%H:%M:%S")
+                else:
+                    prev_str = last_dt.strftime("%d-%m-%Y %H:%M:%S")
+
+                # Ensure stack has this entry for rm/undo
+                if not any(e.get("sheet") == "health" and e.get("row_index") == last_row and last_col in e.get("cols", []) for e in _logged_stack):
+                    _logged_stack.append({"sheet": "health", "row_index": last_row, "cols": [last_col]})
+
+                send_message(sender_id, f"{emoji} {label} time updated: {timestamp} (overwrote previous {prev_str})")
+                return
+
+            # Case 2: After > 4 hours -> log as new entry with warning
+            handle_health_entry(col_index, timestamp)
+            send_message(
+                sender_id,
+                f"⚠️ Warning: Missing {opposite_label} log before this {label}.\n"
+                f"{emoji} {label} logged: {timestamp}"
+            )
+            return
+
+    # Normal alternating log or first-ever log
+    handle_health_entry(col_index, timestamp)
+    send_message(sender_id, f"{emoji} {label} logged: {timestamp}")
+
 # ──────────────────────────────────────────────
 # REMOVE LAST ENTRY + UNDO
 # ──────────────────────────────────────────────
@@ -657,11 +799,9 @@ def handle_postback(payload, sender_id):
     timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
     if payload == "HEALTH_SLEEP":
-        handle_health_entry(5, timestamp)
-        send_message(sender_id, f"😴 Sleep logged: {timestamp}")
+        handle_sleep_wake_log("sleep", sender_id)
     elif payload == "HEALTH_WAKEUP":
-        handle_health_entry(6, timestamp)
-        send_message(sender_id, f"☀️ Wake up logged: {timestamp}")
+        handle_sleep_wake_log("wake", sender_id)
     elif payload == "HEALTH_JERK":
         handle_health_entry(4, timestamp)
         send_message(sender_id, f"✅ Jerk logged: {timestamp}")
@@ -699,14 +839,10 @@ def parse_and_handle(message_text, sender_id):
     # Failsafe for mobile app bugs where quick reply/ice breaker is sent as plain text
     text_lower = message_text.strip().lower()
     if text_lower == "😴 sleep":
-        timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
-        handle_health_entry(5, timestamp)
-        send_message(sender_id, f"😴 Sleep logged: {timestamp}")
+        handle_sleep_wake_log("sleep", sender_id)
         return
     elif text_lower == "☀️ wake up":
-        timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
-        handle_health_entry(6, timestamp)
-        send_message(sender_id, f"☀️ Wake up logged: {timestamp}")
+        handle_sleep_wake_log("wake", sender_id)
         return
 
     parts = message_text.strip().split(" ", 1)
@@ -740,9 +876,7 @@ def parse_and_handle(message_text, sender_id):
                     "For sleep: send 's' with nothing after it"
                 )
         else:
-            timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
-            handle_health_entry(5, timestamp)
-            send_message(sender_id, f"😴 Sleep logged: {timestamp}")
+            handle_sleep_wake_log("sleep", sender_id)
 
     # ── TOTAL: total [d/w/m/y date] or total [dd/mm/yy] ──
     elif keyword == "total":
@@ -780,9 +914,7 @@ def parse_and_handle(message_text, sender_id):
     # ── HEALTH: w (wake up timestamp) ──
     elif keyword == "w":
         if not rest:
-            timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
-            handle_health_entry(6, timestamp)
-            send_message(sender_id, f"☀️ Wake up logged: {timestamp}")
+            handle_sleep_wake_log("wake", sender_id)
         else:
             send_message(sender_id, "❌ Invalid format. Use: w (with nothing after it)\nExample: w")
 

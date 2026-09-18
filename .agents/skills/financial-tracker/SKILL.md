@@ -15,6 +15,7 @@ This skill encapsulates workflow procedures and domain knowledge for developing,
 - **Run unit tests**:
   ```powershell
   python test_parse.py
+  python test_sleep_wake.py
   ```
 - **Start local server**:
   ```powershell
@@ -44,6 +45,11 @@ This skill encapsulates workflow procedures and domain knowledge for developing,
 4. **Finance vs. Health Sheet Layouts**:
    - Finance (`sheet1`): `[Date, time spent, amount spent, note spent, time added, amount added, note added]`. Spent & added can share the same row if logged on the same day.
    - Health (`health`): `[Date, Weight, Exercises, Jerk, Sleep, Wake Up, Notes]`. Time entries (`j`, `s`, `w`) store `"x"` with timestamps in cell notes.
+
+5. **Sleep & Wake Up Alternation and Overwrites**:
+   - Sleep and Wake Up must alternate.
+   - If the same event is logged consecutively within 4 hours, overwrite the previous cell note in-place and notify the user.
+   - If logged consecutively after > 4 hours, log a new entry and warn that the preceding event was missed.
 
 ---
 
