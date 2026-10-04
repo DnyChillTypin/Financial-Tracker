@@ -1,4 +1,5 @@
 import os
+import re
 import time
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request
@@ -79,6 +80,71 @@ def _add_note(sheet, row_index, col_index, timestamp):
     col_letter = chr(ord('A') + col_index - 1)
     sheet.update_note(f"{col_letter}{row_index}", f"Logged: {timestamp}")
 
+def _insert_entry_rows(sheet, sheet_name, row_index, rows):
+    """Insert explicitly positioned rows and keep removal history aligned."""
+    sheet.insert_rows([[""] * 7 for _ in rows], row=row_index)
+    sheet.update(f'A{row_index}:G{row_index + len(rows) - 1}', rows)
+    for entry in _logged_stack:
+        if entry["sheet"] == sheet_name and entry["row_index"] >= row_index:
+            entry["row_index"] += len(rows)
+    if (_last_removed and _last_removed["sheet"] == sheet_name
+            and _last_removed["row_index"] >= row_index):
+        _last_removed["row_index"] += len(rows)
+
+def _entry_row(sheet, sheet_name, occurred_at, cols, scan_all=False):
+    """Find an empty slot in the event's date block, creating it if needed."""
+    values = sheet.get_all_values()
+    target_date = occurred_at.date()
+    date_str = occurred_at.strftime("%d-%m-%Y")
+    current_date = None
+    matching = []
+    later_row = None
+    for index, row in enumerate(values[1:], 2):
+        if row and row[0]:
+            current_date = _parse_date_str(row[0])
+            if current_date and current_date > target_date and later_row is None:
+                later_row = index
+        if current_date == target_date and any(row):
+            matching.append(index)
+
+    candidates = reversed(matching) if scan_all else matching[-1:]
+    for index in candidates:
+        row = values[index - 1]
+        if all(len(row) < col or not row[col - 1] for col in cols):
+            return index
+
+    if matching:
+        index = matching[-1] + 1
+        rows = [[""] * 7]
+    elif later_row is not None:
+        index = later_row
+        rows = [[date_str] + [""] * 6, [""] * 7]
+    else:
+        index = len(values) + 1
+        # Keep the separator even though Sheets omits trailing empty rows.
+        if len(values) > 1:
+            index += 1
+        sheet.update(f'A{index}:G{index}', [[date_str] + [""] * 6])
+        return index
+
+    if index <= len(values):
+        _insert_entry_rows(sheet, sheet_name, index, rows)
+    else:
+        sheet.update(f'A{index}:G{index}', rows)
+    return index
+
+def _write_finance_entry(amount, note, occurred_at, cols):
+    sheet = get_finance_sheet()
+    occurred_at = occurred_at or datetime.now(VIETNAM_TZ)
+    row_index = _entry_row(sheet, "finance", occurred_at, cols)
+    first, _, last = cols
+    sheet.update(f'{chr(64 + first)}{row_index}:{chr(64 + last)}{row_index}',
+                 [["x", amount, note]])
+    timestamp = occurred_at.strftime("%Y-%m-%d %H:%M:%S")
+    for col in cols[:2] + (cols[2:] if note else []):
+        _add_note(sheet, row_index, col, timestamp)
+    _logged_stack.append({"sheet": "finance", "row_index": row_index, "cols": cols})
+
 # ──────────────────────────────────────────────
 # FINANCE HELPERS
 # Finance columns:
@@ -113,73 +179,12 @@ def get_last_finance_row_index(sheet):
             return i + 1
     return 0
 
-def handle_finance_spent(amount, note):
-    sheet = get_finance_sheet()
-    finance_new_day_separator(sheet)
-    today_str = get_today_date_str()
-    timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Get all values and check if last row has today's date and empty spent portion
-    all_values = sheet.get_all_values()
-    if all_values:
-        last_row = all_values[-1]
-        # Check if last row has today's date (col 0) and spent portion is empty (cols 1-3)
-        if len(last_row) > 0 and last_row[0] == today_str and not last_row[1] and not last_row[2] and not last_row[3]:
-            # Update the last row instead of appending
-            last_row_index = len(all_values)
-            sheet.update_cell(last_row_index, 2, "x")        # time spent → x
-            sheet.update_cell(last_row_index, 3, amount)     # amount spent
-            sheet.update_cell(last_row_index, 4, note)       # note spent
-            _add_note(sheet, last_row_index, 2, timestamp)
-            _add_note(sheet, last_row_index, 3, timestamp)
-            if note:
-                _add_note(sheet, last_row_index, 4, timestamp)
-            _logged_stack.append({"sheet": "finance", "row_index": last_row_index, "cols": [2, 3, 4]})
-            return
-    
-    # Otherwise, append a new row
-    date_col = get_finance_date_col(sheet)
-    sheet.append_row([date_col, "x", amount, note, "", "", ""])
-    row_index = len(sheet.get_all_values())
-    _add_note(sheet, row_index, 2, timestamp)
-    _add_note(sheet, row_index, 3, timestamp)
-    if note:
-        _add_note(sheet, row_index, 4, timestamp)
-    _logged_stack.append({"sheet": "finance", "row_index": row_index, "cols": [2, 3, 4]})
+def handle_finance_spent(amount, note, occurred_at=None):
+    _write_finance_entry(amount, note, occurred_at, [2, 3, 4])
 
-def handle_finance_added(amount, note):
-    sheet = get_finance_sheet()
-    finance_new_day_separator(sheet)
-    today_str = get_today_date_str()
-    timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Get all values and check if last row has today's date and empty added portion
-    all_values = sheet.get_all_values()
-    if all_values:
-        last_row = all_values[-1]
-        # Check if last row has today's date (col 0) and added portion is empty (cols 4-6)
-        if len(last_row) > 0 and last_row[0] == today_str and not last_row[4] and not last_row[5] and not last_row[6]:
-            # Update the last row instead of appending
-            last_row_index = len(all_values)
-            sheet.update_cell(last_row_index, 5, "x")        # time added → x
-            sheet.update_cell(last_row_index, 6, amount)     # amount added
-            sheet.update_cell(last_row_index, 7, note)       # note added
-            _add_note(sheet, last_row_index, 5, timestamp)
-            _add_note(sheet, last_row_index, 6, timestamp)
-            if note:
-                _add_note(sheet, last_row_index, 7, timestamp)
-            _logged_stack.append({"sheet": "finance", "row_index": last_row_index, "cols": [5, 6, 7]})
-            return
-    
-    # Otherwise, append a new row
-    date_col = get_finance_date_col(sheet)
-    sheet.append_row([date_col, "", "", "", "x", amount, note])
-    row_index = len(sheet.get_all_values())
-    _add_note(sheet, row_index, 5, timestamp)
-    _add_note(sheet, row_index, 6, timestamp)
-    if note:
-        _add_note(sheet, row_index, 7, timestamp)
-    _logged_stack.append({"sheet": "finance", "row_index": row_index, "cols": [5, 6, 7]})
+
+def handle_finance_added(amount, note, occurred_at=None):
+    _write_finance_entry(amount, note, occurred_at, [5, 6, 7])
 
 # ──────────────────────────────────────────────
 # TOTAL HELPERS
@@ -474,7 +479,7 @@ def ensure_health_today(sheet):
         sheet.update(f'A{date_row}:G{date_row}',
                      [[today_str, "", "", "", "", "", ""]])
 
-def handle_health_entry(col_index, value):
+def handle_health_entry(col_index, value, occurred_at=None):
     """
     col_index (1-based):
     1=Date, 2=Weight, 3=Exercises, 4=Jerk, 5=Sleep, 6=Wake Up, 7=Notes
@@ -483,44 +488,16 @@ def handle_health_entry(col_index, value):
     Only appends a new row if no such row is available.
     """
     sheet = get_health_sheet()
-    ensure_health_today(sheet)
-    timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    occurred_at = occurred_at or datetime.now(VIETNAM_TZ)
+    timestamp = occurred_at.strftime("%Y-%m-%d %H:%M:%S")
 
     # Time-based entries store 'x'; the real timestamp goes in the cell note
-    is_time_entry = col_index in (4, 5, 6)
-    cell_value = "x" if is_time_entry else value
-
-    today_str = get_today_date_str()
-    all_values = sheet.get_all_values()
-
-    # Scan backwards for a today's row where col_index cell is empty
-    target_row_index = None
-    for i in range(len(all_values) - 1, -1, -1):
-        row_data = all_values[i]
-        # Stop scanning once we've passed today's date block
-        if row_data[0] and row_data[0] != today_str:
-            break
-        # Must be within today's block (date col is today or empty)
-        if row_data[0] == today_str or row_data[0] == "":
-            # Check if the target column is empty in this row
-            col_val = row_data[col_index - 1] if len(row_data) >= col_index else ""
-            if not col_val.strip():
-                target_row_index = i + 1  # 1-based
-                break
-
-    if target_row_index is not None:
-        # Update in-place
-        sheet.update_cell(target_row_index, col_index, cell_value)
-        row_index = target_row_index
-    else:
-        # No suitable row found — write a new one at explicit position
-        new_row = _next_empty_row(sheet)
-        col_letter = chr(ord('A') + col_index - 1)
-        sheet.update(f'{col_letter}{new_row}', [[cell_value]])
-        row_index = new_row
-
+    cell_value = "x" if col_index in (4, 5, 6) else value
+    row_index = _entry_row(sheet, "health", occurred_at, [col_index], scan_all=True)
+    sheet.update_cell(row_index, col_index, cell_value)
     _add_note(sheet, row_index, col_index, timestamp)
     _logged_stack.append({"sheet": "health", "row_index": row_index, "cols": [col_index]})
+
 
 def _parse_note_timestamp(note_text):
     """Extract datetime from 'Logged: YYYY-MM-DD HH:MM:SS' note text."""
@@ -554,66 +531,42 @@ def _get_row_date(all_values, row_idx):
                 return datetime(d.year, d.month, d.day, tzinfo=VIETNAM_TZ)
     return None
 
-def get_last_sleep_wake_event(sheet):
+def get_last_sleep_wake_event(sheet, before=None):
     """
     Find the most recent sleep or wake up log in the health sheet.
     Returns (event_type, event_dt, row_index, col_index) or None.
     event_type is 'sleep' (col 5) or 'wake' (col 6).
     """
     all_values = sheet.get_all_values()
-    if len(all_values) <= 1:
-        return None
-
-    last_sleep_row = None
-    last_wake_row = None
-
-    for i in range(len(all_values) - 1, 0, -1):
-        row = all_values[i]
-        if last_sleep_row is None and len(row) >= 5 and row[4].strip():
-            last_sleep_row = i + 1
-        if last_wake_row is None and len(row) >= 6 and row[5].strip():
-            last_wake_row = i + 1
-        if last_sleep_row is not None and last_wake_row is not None:
+    candidates = []
+    row_date = None
+    for row_index, row in enumerate(all_values[1:], 2):
+        if row and row[0]:
+            row_date = _get_row_date(all_values, row_index)
+        if not row_date or (before and row_date.date() > before.date()):
+            continue
+        for col, event_type in ((5, "sleep"), (6, "wake")):
+            if len(row) < col or not row[col - 1].strip():
+                continue
+            candidates.append((row_date, row_index, col, event_type))
+    latest = None
+    # Only fetch notes until the most recent eligible day has been checked.
+    for row_date, row_index, col, event_type in sorted(candidates, reverse=True):
+        if latest and row_date.date() < latest[1].date():
             break
+        event_dt = _parse_note_timestamp(_get_note(sheet, row_index, col)) or row_date
+        if (before is None or event_dt <= before) and (latest is None or event_dt > latest[1]):
+            latest = (event_type, event_dt, row_index, col)
+    return latest
 
-    if last_sleep_row is None and last_wake_row is None:
-        return None
 
-    sleep_dt = None
-    wake_dt = None
-
-    if last_sleep_row is not None:
-        sleep_note = _get_note(sheet, last_sleep_row, 5)
-        sleep_dt = _parse_note_timestamp(sleep_note) or _get_row_date(all_values, last_sleep_row)
-
-    if last_wake_row is not None:
-        wake_note = _get_note(sheet, last_wake_row, 6)
-        wake_dt = _parse_note_timestamp(wake_note) or _get_row_date(all_values, last_wake_row)
-
-    # Determine which event occurred later
-    if sleep_dt and wake_dt:
-        if sleep_dt >= wake_dt:
-            return ('sleep', sleep_dt, last_sleep_row, 5)
-        else:
-            return ('wake', wake_dt, last_wake_row, 6)
-    elif sleep_dt:
-        return ('sleep', sleep_dt, last_sleep_row, 5)
-    elif wake_dt:
-        return ('wake', wake_dt, last_wake_row, 6)
-    else:
-        # Fallback to row numbers if datetimes couldn't be resolved
-        if last_sleep_row is not None and (last_wake_row is None or last_sleep_row >= last_wake_row):
-            return ('sleep', None, last_sleep_row, 5)
-        else:
-            return ('wake', None, last_wake_row, 6)
-
-def handle_sleep_wake_log(action_type, sender_id):
+def handle_sleep_wake_log(action_type, sender_id, occurred_at=None):
     """
     Handle logging of sleep or wake up with alternation check and 4-hour duplicate handling.
     action_type: 'sleep' (col 5) or 'wake' (col 6)
     """
     sheet = get_health_sheet()
-    now = datetime.now(VIETNAM_TZ)
+    now = occurred_at or datetime.now(VIETNAM_TZ)
     timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
 
     col_index = 5 if action_type == 'sleep' else 6
@@ -621,7 +574,7 @@ def handle_sleep_wake_log(action_type, sender_id):
     label = "Sleep" if action_type == 'sleep' else "Wake up"
     opposite_label = "Wake Up" if action_type == 'sleep' else "Sleep"
 
-    last_event_info = get_last_sleep_wake_event(sheet)
+    last_event_info = get_last_sleep_wake_event(sheet, before=now)
 
     if last_event_info:
         last_type, last_dt, last_row, last_col = last_event_info
@@ -635,6 +588,18 @@ def handle_sleep_wake_log(action_type, sender_id):
 
             # Case 1: Within 4 hours -> overwrite previous timestamp
             if diff_hours is not None and 0 <= diff_hours <= 4.0:
+                # An updated event crossing midnight belongs in its new date block.
+                row_date = _get_row_date(sheet.get_all_values(), last_row)
+                if row_date and row_date.date() != now.date():
+                    sheet.update_cell(last_row, last_col, "")
+                    sheet.update_note(f'{chr(64 + last_col)}{last_row}', "")
+                    _logged_stack[:] = [e for e in _logged_stack if not (
+                        e["sheet"] == "health" and e["row_index"] == last_row
+                        and last_col in e["cols"])]
+                    handle_health_entry(col_index, timestamp, occurred_at=now)
+                    send_message(sender_id, f"{emoji} {label} time updated: {timestamp} "
+                                 f"(overwrote previous {last_dt:%d-%m-%Y %H:%M:%S})")
+                    return
                 sheet.update_cell(last_row, last_col, "x")
                 _add_note(sheet, last_row, last_col, timestamp)
 
@@ -652,7 +617,7 @@ def handle_sleep_wake_log(action_type, sender_id):
                 return
 
             # Case 2: After > 4 hours -> log as new entry with warning
-            handle_health_entry(col_index, timestamp)
+            handle_health_entry(col_index, timestamp, occurred_at=now)
             send_message(
                 sender_id,
                 f"⚠️ Warning: Missing {opposite_label} log before this {label}.\n"
@@ -661,7 +626,7 @@ def handle_sleep_wake_log(action_type, sender_id):
             return
 
     # Normal alternating log or first-ever log
-    handle_health_entry(col_index, timestamp)
+    handle_health_entry(col_index, timestamp, occurred_at=now)
     send_message(sender_id, f"{emoji} {label} logged: {timestamp}")
 
 # ──────────────────────────────────────────────
@@ -700,6 +665,7 @@ def handle_remove_last():
     # Build preview of what's being cleared
     preview_vals = [row_data[c - 1] for c in cols if row_data[c - 1].strip()]
     preview = " | ".join(preview_vals) if preview_vals else "(empty)"
+    row_notes = {col: _get_note(sheet, row_idx, col) for col in range(1, 8)}
 
     if info["sheet"] == "health":
         # Health: always delete the entire row (removes values + cell notes)
@@ -719,6 +685,7 @@ def handle_remove_last():
         # Finance: clear only the specific cells
         for col in cols:
             sheet.update_cell(row_idx, col, "")
+            sheet.update_note(f'{chr(64 + col)}{row_idx}', "")
 
         # Check if the row still has any data beyond the date column
         updated_row = sheet.row_values(row_idx)
@@ -746,6 +713,7 @@ def handle_remove_last():
                 "cleared_values": [row_data[c - 1] for c in cols],
             }
 
+    _last_removed["notes"] = row_notes
     return f"🗑️ Removed: {preview}\nType 'undo' to restore."
 
 
@@ -788,6 +756,11 @@ def handle_undo():
             "cols": entry["cols"],
         })
 
+    note_cols = entry.get("cols_cleared", range(1, 8))
+    for col in note_cols:
+        note = entry.get("notes", {}).get(col, "")
+        if note:
+            sheet.update_note(f'{chr(64 + col)}{entry["row_index"]}', note)
     return f"↩️ Restored last {entry['sheet']} entry."
 
 # ──────────────────────────────────────────────
@@ -826,6 +799,8 @@ def handle_postback(payload, sender_id):
             "  s           — log sleep\n"
             "  w           — log wake up\n"
             "  j           — log jerk\n\n"
+            "⏱ Add -hours to any log for an earlier time (Vietnam time).\n"
+            "  s 100 lunch -4 | ex 30 pushups -1.5 | s -8\n\n"
             "💡 Use the ≡ menu for quick sleep/wake/jerk buttons!"
         )
     else:
@@ -835,14 +810,38 @@ def handle_postback(payload, sender_id):
 # MESSAGE PARSING
 # ──────────────────────────────────────────────
 
+def _parse_logging_delay(message_text):
+    """Remove a trailing -hours suffix from logging commands only."""
+    text = message_text.strip()
+    parts = text.split(maxsplit=1)
+    keyword = parts[0].lower() if parts else ""
+    if keyword not in ("a", "s", "we", "ex", "n", "j", "w", "😴", "☀️"):
+        return text, None
+    match = re.search(r"\s+-([0-9]+(?:\.[0-9]+)?|\.[0-9]+)$", text)
+    if not match:
+        if re.search(r"\s+-(?:[0-9.]\S*|inf|infinity|nan)$", text, re.IGNORECASE):
+            raise ValueError("❌ Invalid delay. Use hours, e.g. -4 or -1.5.")
+        return text, None
+    try:
+        occurred_at = datetime.now(VIETNAM_TZ) - timedelta(hours=float(match[1]))
+    except (ValueError, OverflowError):
+        raise ValueError("❌ Delay is too large. Use hours, e.g. -4 or -1.5.") from None
+    return text[:match.start()].rstrip(), occurred_at
+
 def parse_and_handle(message_text, sender_id):
+    try:
+        message_text, occurred_at = _parse_logging_delay(message_text)
+    except ValueError as exc:
+        send_message(sender_id, str(exc))
+        return
+    delayed_label = (f" (at {occurred_at:%Y-%m-%d %H:%M:%S})" if occurred_at else "")
     # Failsafe for mobile app bugs where quick reply/ice breaker is sent as plain text
     text_lower = message_text.strip().lower()
     if text_lower == "😴 sleep":
-        handle_sleep_wake_log("sleep", sender_id)
+        handle_sleep_wake_log("sleep", sender_id, occurred_at=occurred_at)
         return
     elif text_lower == "☀️ wake up":
-        handle_sleep_wake_log("wake", sender_id)
+        handle_sleep_wake_log("wake", sender_id, occurred_at=occurred_at)
         return
 
     parts = message_text.strip().split(" ", 1)
@@ -855,8 +854,8 @@ def parse_and_handle(message_text, sender_id):
         try:
             amount = float(sub[0])
             note = sub[1].strip() if len(sub) > 1 else ""
-            handle_finance_added(amount, note)
-            send_message(sender_id, f"✅ Added: {amount:.3f}K" + (f" — {note}" if note else ""))
+            handle_finance_added(amount, note, occurred_at=occurred_at)
+            send_message(sender_id, f"✅ Added: {amount:.3f}K" + (f" — {note}" if note else "") + delayed_label)
         except ValueError:
             send_message(sender_id, "❌ Invalid format. Use: a [amount] [optional note]\nExample: a 500 salary")
 
@@ -867,8 +866,8 @@ def parse_and_handle(message_text, sender_id):
             try:
                 amount = float(sub[0])
                 note = sub[1].strip() if len(sub) > 1 else ""
-                handle_finance_spent(amount, note)
-                send_message(sender_id, f"✅ Spent: {amount:.3f}K" + (f" — {note}" if note else ""))
+                handle_finance_spent(amount, note, occurred_at=occurred_at)
+                send_message(sender_id, f"✅ Spent: {amount:.3f}K" + (f" — {note}" if note else "") + delayed_label)
             except ValueError:
                 send_message(sender_id,
                     "❌ Invalid format.\n"
@@ -876,7 +875,7 @@ def parse_and_handle(message_text, sender_id):
                     "For sleep: send 's' with nothing after it"
                 )
         else:
-            handle_sleep_wake_log("sleep", sender_id)
+            handle_sleep_wake_log("sleep", sender_id, occurred_at=occurred_at)
 
     # ── TOTAL: total [d/w/m/y date] or total [dd/mm/yy] ──
     elif keyword == "total":
@@ -892,37 +891,37 @@ def parse_and_handle(message_text, sender_id):
     elif keyword == "we":
         try:
             weight = float(rest)
-            handle_health_entry(2, weight)
-            send_message(sender_id, f"✅ Weight logged: {weight} kg")
+            handle_health_entry(2, weight, occurred_at=occurred_at)
+            send_message(sender_id, f"✅ Weight logged: {weight} kg" + delayed_label)
         except ValueError:
             send_message(sender_id, "❌ Invalid format. Use: we [number]\nExample: we 70.5")
 
     # ── HEALTH: ex [string] ──
     elif keyword == "ex":
         if rest:
-            handle_health_entry(3, rest)
-            send_message(sender_id, f"✅ Exercise logged: {rest}")
+            handle_health_entry(3, rest, occurred_at=occurred_at)
+            send_message(sender_id, f"✅ Exercise logged: {rest}" + delayed_label)
         else:
             send_message(sender_id, "❌ Invalid format. Use: ex [description]\nExample: ex 30 min run")
 
     # ── HEALTH: j (jerk timestamp) ──
     elif keyword == "j":
-        timestamp = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
-        handle_health_entry(4, timestamp)
+        timestamp = (occurred_at or datetime.now(VIETNAM_TZ)).strftime("%Y-%m-%d %H:%M:%S")
+        handle_health_entry(4, timestamp, occurred_at=occurred_at)
         send_message(sender_id, f"✅ Jerk logged: {timestamp}")
 
     # ── HEALTH: w (wake up timestamp) ──
     elif keyword == "w":
         if not rest:
-            handle_sleep_wake_log("wake", sender_id)
+            handle_sleep_wake_log("wake", sender_id, occurred_at=occurred_at)
         else:
             send_message(sender_id, "❌ Invalid format. Use: w (with nothing after it)\nExample: w")
 
     # ── HEALTH: n [string] ──
     elif keyword == "n":
         if rest:
-            handle_health_entry(7, rest)
-            send_message(sender_id, f"✅ Note logged: {rest}")
+            handle_health_entry(7, rest, occurred_at=occurred_at)
+            send_message(sender_id, f"✅ Note logged: {rest}" + delayed_label)
         else:
             send_message(sender_id, "❌ Invalid format. Use: n [note]\nExample: n felt tired today")
 
@@ -986,6 +985,8 @@ def parse_and_handle(message_text, sender_id):
             "  s           — log sleep\n"
             "  w           — log wake up\n"
             "  j           — log jerk\n\n"
+            "⏱ Add -hours to any log for an earlier time (Vietnam time).\n"
+            "  s 100 lunch -4 | ex 30 pushups -1.5 | s -8\n\n"
             "🔧 Other:\n"
             "  link        — get spreadsheet link\n"
             "  menu        — show sleep/wake buttons\n"

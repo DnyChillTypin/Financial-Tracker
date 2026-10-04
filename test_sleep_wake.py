@@ -122,11 +122,11 @@ class TestSleepWakeLogic(unittest.TestCase):
             ["18-09-2026", "", "", "", "x", "", ""]
         ]
         # Previous sleep was logged 1 hour ago
-        now = datetime.now(VIETNAM_TZ)
+        now = datetime(2026, 9, 18, 12, 0, tzinfo=VIETNAM_TZ)
         prev_time = now - timedelta(hours=1)
         mock_sheet.get_note.return_value = f"Logged: {prev_time.strftime('%Y-%m-%d %H:%M:%S')}"
 
-        main.handle_sleep_wake_log("sleep", "test_sender")
+        main.handle_sleep_wake_log("sleep", "test_sender", occurred_at=now)
 
         # Must overwrite cell note instead of appending a new row
         mock_sheet.update_cell.assert_called_with(2, 5, "x")
