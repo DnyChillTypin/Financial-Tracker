@@ -192,6 +192,55 @@ class TestDelayedLogging(unittest.TestCase):
         self.assertEqual(self.finance.notes['B2'], 'Logged: 2026-10-03 22:00:00')
         self.assertEqual(self.finance.notes['E2'], 'Logged: 2026-10-03 23:00:00')
 
+    def test_full_word_finance_commands(self):
+        self.log('spend 100 lunch -4')
+        self.log('income 500 salary -3')
+        self.assertEqual(self.finance.rows[1][1:],
+                         ['x', '100.0', 'lunch', 'x', '500.0', 'salary'])
+        self.assertEqual(self.finance.notes['B2'], 'Logged: 2026-10-03 22:00:00')
+        self.assertEqual(self.finance.notes['E2'], 'Logged: 2026-10-03 23:00:00')
+
+    def test_full_word_health_commands(self):
+        commands = [('weight 70.5', 2, '70.5'),
+                    ('exercise 30 pushups', 3, '30 pushups'),
+                    ('jerk', 4, 'x'),
+                    ('note felt good', 7, 'felt good')]
+        for command, column, expected in commands:
+            with self.subTest(command=command):
+                self.log(command + ' -1')
+                self.assertEqual(self.health.rows[1][column - 1], expected)
+                self.assertEqual(self.health.notes[f'{chr(64 + column)}2'],
+                                 'Logged: 2026-10-04 01:00:00')
+
+    def test_sleep_and_wake_full_words_accept_spaced_delay(self):
+        self.log('sleep - 10')
+        self.log('wake up - 2')
+        self.assertEqual(self.health.notes['E2'], 'Logged: 2026-10-03 16:00:00')
+        self.assertEqual(self.health.notes['F4'], 'Logged: 2026-10-04 00:00:00')
+
+    def test_additional_aliases(self):
+        self.log('spent 10 food')
+        self.log('add 20 refund')
+        self.log('workout 10 pullups')
+        self.assertEqual(self.finance.rows[1][2], '10.0')
+        self.assertEqual(self.finance.rows[1][5], '20.0')
+        self.assertEqual(self.health.rows[1][2], '10 pullups')
+
+    def test_wakeup_spellings(self):
+        for command in ('wake', 'wakeup', 'wake-up'):
+            with self.subTest(command=command):
+                main._logged_stack.clear()
+                self.health.rows = [["Date"] + [""] * 6]
+                self.health.notes.clear()
+                self.log(command + ' -2')
+                self.assertEqual(self.health.notes['F2'],
+                                 'Logged: 2026-10-04 00:00:00')
+
+    def test_sleep_rejects_unrecognized_arguments(self):
+        self.log('sleep sometime')
+        self.assertEqual(len(self.health.rows), 1)
+        self.assertIn('Invalid format', self.send.call_args.args[1])
+
 
 if __name__ == '__main__':
     unittest.main()

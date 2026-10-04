@@ -782,8 +782,8 @@ def handle_postback(payload, sender_id):
         send_message(sender_id,
             "👋 Welcome! Here are the commands:\n\n"
             "💰 Finance:\n"
-            "  s [amount] [note] — log spending\n"
-            "  a [amount] [note] — log income\n"
+            "  spend [amount] [note] (or s) — log spending\n"
+            "  income [amount] [note] (or a/add) — log income\n"
             "  total               — today's summary\n"
             "  total d [dd/mm]     — day summary\n"
             "  total w [dd/mm]     — week summary\n"
@@ -793,14 +793,14 @@ def handle_postback(payload, sender_id):
             "  rm / remove         — remove last entry\n"
             "  undo                 — restore removed entry\n\n"
             "🏃 Health:\n"
-            "  we [float]  — weight\n"
-            "  ex [string] — exercise\n"
-            "  n [string]  — notes\n"
-            "  s           — log sleep\n"
-            "  w           — log wake up\n"
-            "  j           — log jerk\n\n"
+            "  weight [number] (or we) — weight\n"
+            "  exercise [text] (or ex/workout) — exercise\n"
+            "  note [text] (or n) — notes\n"
+            "  sleep (or s) — log sleep\n"
+            "  wake / wake up / wakeup (or w) — log wake up\n"
+            "  jerk (or j) — log jerk\n\n"
             "⏱ Add -hours to any log for an earlier time (Vietnam time).\n"
-            "  s 100 lunch -4 | ex 30 pushups -1.5 | s -8\n\n"
+            "  spend 100 lunch -4 | exercise 30 pushups -1.5 | sleep -8\n\n"
             "💡 Use the ≡ menu for quick sleep/wake/jerk buttons!"
         )
     else:
@@ -810,14 +810,31 @@ def handle_postback(payload, sender_id):
 # MESSAGE PARSING
 # ──────────────────────────────────────────────
 
+LOGGING_COMMAND_ALIASES = {
+    "add": "a",
+    "income": "a",
+    "spend": "spend",
+    "spent": "spend",
+    "weight": "we",
+    "exercise": "ex",
+    "workout": "ex",
+    "note": "n",
+    "sleep": "sleep",
+    "wake": "w",
+    "wakeup": "w",
+    "wake-up": "w",
+    "jerk": "j",
+}
+
 def _parse_logging_delay(message_text):
     """Remove a trailing -hours suffix from logging commands only."""
     text = message_text.strip()
     parts = text.split(maxsplit=1)
     keyword = parts[0].lower() if parts else ""
-    if keyword not in ("a", "s", "we", "ex", "n", "j", "w", "😴", "☀️"):
+    logging_keywords = {"a", "s", "we", "ex", "n", "j", "w", "😴", "☀️"}
+    if keyword not in logging_keywords and keyword not in LOGGING_COMMAND_ALIASES:
         return text, None
-    match = re.search(r"\s+-([0-9]+(?:\.[0-9]+)?|\.[0-9]+)$", text)
+    match = re.search(r"\s+-\s*([0-9]+(?:\.[0-9]+)?|\.[0-9]+)$", text)
     if not match:
         if re.search(r"\s+-(?:[0-9.]\S*|inf|infinity|nan)$", text, re.IGNORECASE):
             raise ValueError("❌ Invalid delay. Use hours, e.g. -4 or -1.5.")
@@ -847,6 +864,11 @@ def parse_and_handle(message_text, sender_id):
     parts = message_text.strip().split(" ", 1)
     keyword = parts[0].lower()
     rest = parts[1].strip() if len(parts) > 1 else ""
+    keyword = LOGGING_COMMAND_ALIASES.get(keyword, keyword)
+
+    # Accept the conversational two-word command "wake up".
+    if keyword == "w" and rest.lower() == "up":
+        rest = ""
 
     # ── FINANCE: a [amount] [note] ──
     if keyword == "a":
@@ -860,7 +882,11 @@ def parse_and_handle(message_text, sender_id):
             send_message(sender_id, "❌ Invalid format. Use: a [amount] [optional note]\nExample: a 500 salary")
 
     # ── FINANCE: s [amount] [note]  OR  HEALTH: s (sleep timestamp) ──
-    elif keyword == "s":
+    elif keyword in ("s", "spend", "sleep"):
+        is_sleep_command = keyword in ("s", "sleep") and not rest
+        if is_sleep_command:
+            handle_sleep_wake_log("sleep", sender_id, occurred_at=occurred_at)
+            return
         if rest:
             sub = rest.split(" ", 1)
             try:
@@ -875,7 +901,7 @@ def parse_and_handle(message_text, sender_id):
                     "For sleep: send 's' with nothing after it"
                 )
         else:
-            handle_sleep_wake_log("sleep", sender_id, occurred_at=occurred_at)
+            send_message(sender_id, "❌ Invalid format. Use: spend [amount] [optional note]\nExample: spend 15 lunch")
 
     # ── TOTAL: total [d/w/m/y date] or total [dd/mm/yy] ──
     elif keyword == "total":
@@ -968,8 +994,8 @@ def parse_and_handle(message_text, sender_id):
         send_message(sender_id,
             "❓ Unknown command. Here's what you can use:\n\n"
             "💰 Finance:\n"
-            "  s [amount] [note] — log spending\n"
-            "  a [amount] [note] — log income\n"
+            "  spend [amount] [note] (or s) — log spending\n"
+            "  income [amount] [note] (or a/add) — log income\n"
             "  total               — today's summary\n"
             "  total d [dd/mm]     — day summary\n"
             "  total w [dd/mm]     — week summary\n"
@@ -979,14 +1005,14 @@ def parse_and_handle(message_text, sender_id):
             "  rm / remove         — remove last entry\n"
             "  undo                 — restore removed entry\n\n"
             "🏃 Health:\n"
-            "  we [float]  — weight\n"
-            "  ex [string] — exercise\n"
-            "  n [string]  — notes\n"
-            "  s           — log sleep\n"
-            "  w           — log wake up\n"
-            "  j           — log jerk\n\n"
+            "  weight [number] (or we) — weight\n"
+            "  exercise [text] (or ex/workout) — exercise\n"
+            "  note [text] (or n) — notes\n"
+            "  sleep (or s) — log sleep\n"
+            "  wake / wake up / wakeup (or w) — log wake up\n"
+            "  jerk (or j) — log jerk\n\n"
             "⏱ Add -hours to any log for an earlier time (Vietnam time).\n"
-            "  s 100 lunch -4 | ex 30 pushups -1.5 | s -8\n\n"
+            "  spend 100 lunch -4 | exercise 30 pushups -1.5 | sleep -8\n\n"
             "🔧 Other:\n"
             "  link        — get spreadsheet link\n"
             "  menu        — show sleep/wake buttons\n"

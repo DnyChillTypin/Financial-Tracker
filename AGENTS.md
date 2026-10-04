@@ -65,8 +65,8 @@ All messages arriving from Facebook Messenger are routed to `parse_and_handle(me
 
 | Domain | Command Syntax | Description | Example |
 |---|---|---|---|
-| **Finance** | `s [amount] [note]` | Log spending (amount in K) | `s 15 lunch` |
-| | `a [amount] [note]` | Log income/added (amount in K) | `a 500 salary` |
+| **Finance** | `s` / `spend` / `spent [amount] [note]` | Log spending (amount in K) | `spend 15 lunch` |
+| | `a` / `add` / `income [amount] [note]` | Log income/added (amount in K) | `income 500 salary` |
 | | `total` | Summary for today (spent, added, exercises, jerk) | `total` |
 | | `total d [dd/mm]` | Summary for a specific day | `total d 15/09` |
 | | `total w [dd/mm]` | Summary for that week (Mon–Sun) | `total w 15/09` |
@@ -75,15 +75,17 @@ All messages arriving from Facebook Messenger are routed to `parse_and_handle(me
 | | `total [dd/mm/yy]` | Summary for exact date | `total 15/09/26` |
 | | `rm` or `remove` | Delete the last logged entry | `rm` |
 | | `undo` | Restore the last removed entry | `undo` |
-| **Health** | `we [float]` | Log weight in kg | `we 70.5` |
-| | `ex [string]` | Log exercise | `ex 30 pushups` |
-| | `n [string]` | Log health note | `n feeling energetic` |
-| | `s` (alone) | Log sleep timestamp | `s` |
-| | `w` (alone) | Log wake up timestamp | `w` |
-| | `j` | Log jerk timestamp | `j` |
+| **Health** | `we` / `weight [float]` | Log weight in kg | `weight 70.5` |
+| | `ex` / `exercise` / `workout [string]` | Log exercise | `exercise 30 pushups` |
+| | `n` / `note [string]` | Log health note | `note feeling energetic` |
+| | `s` / `sleep` (alone) | Log sleep timestamp | `sleep` |
+| | `w` / `wake` / `wake up` / `wakeup` (alone) | Log wake up timestamp | `wake up` |
+| | `j` / `jerk` | Log jerk timestamp | `jerk` |
 | **System** | `link` | Returns the Google Sheet URL | `link` |
 | | `menu` | Sends quick reply buttons for Sleep / Wake Up | `menu` |
 | | `setup` | Calls Graph API to configure persistent menu & ice breakers | `setup` |
+
+All logging commands accept a trailing delay in hours, with or without a space after the hyphen. For example, `sleep -10`, `sleep - 10`, and `spend 100 lunch -4` record the event at the corresponding earlier Vietnam time and date.
 
 ---
 
