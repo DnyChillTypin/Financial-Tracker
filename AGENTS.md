@@ -87,6 +87,8 @@ All messages arriving from Facebook Messenger are routed to `parse_and_handle(me
 
 All logging commands accept a trailing delay in hours, with or without a space after the hyphen. For example, `sleep -10`, `sleep - 10`, and `spend 100 lunch -4` record the event at the corresponding earlier Vietnam time and date.
 
+Delayed logs (`-x`) must always receive their own row. Insert that row into its date block according to the effective timestamp stored in the cell note, keeping rows in chronological order. If it becomes the first row of the day, move the date in Col A to the inserted row. Never pair a delayed finance or health entry into an existing row, and never overwrite a delayed sleep/wake entry through duplicate handling.
+
 ---
 
 ## 5. Critical Gotchas & Architectural Memories

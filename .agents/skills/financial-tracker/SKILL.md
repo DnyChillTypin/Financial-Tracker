@@ -51,6 +51,12 @@ This skill encapsulates workflow procedures and domain knowledge for developing,
    - If the same event is logged consecutively within 4 hours, overwrite the previous cell note in-place and notify the user.
    - If logged consecutively after > 4 hours, log a new entry and warn that the preceding event was missed.
 
+6. **Delayed Log Chronology**:
+   - A trailing `-x` delay uses the effective Vietnam timestamp (`now - x hours`).
+   - Every delayed log gets its own row, even when another column is available on an existing row.
+   - Insert delayed rows into the correct date block in chronological timestamp order; move the date cell to the new row when it becomes the first entry of that day.
+   - Delayed sleep/wake entries must not trigger the within-four-hours overwrite behavior.
+
 ---
 
 ## Modifying Parsing or Adding New Commands
