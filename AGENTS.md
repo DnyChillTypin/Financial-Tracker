@@ -24,20 +24,22 @@ The application requires the following environment variables in `.env`:
 - `VERIFY_TOKEN`: Secret token for Facebook Webhook verification (`/webhook` GET).
 - `GOOGLE_CREDENTIALS_FILE`: Path to Google Cloud Service Account JSON credentials file.
 - `SPREADSHEET_NAME`: Target Google Spreadsheet name.
+- `CRON_SECRET`: Secret the external scheduler passes as `?key=` to `/cron/tasks`.
+- `REMINDER_RECIPIENT_ID`: Messenger PSID that receives the scheduled task list (send `myid` to the bot to get it).
 
 ---
 
 ## 3. Google Sheets Schema & Behaviors
 
-The Google Spreadsheet contains two core sheets:
+The Google Spreadsheet contains three core sheets. **No cell notes are used**: every tracked value has its timestamp in a plain cell, formatted `YYYY-MM-DD HH:MM:SS`, with ` (delayed)` appended for `-x` logs. Timestamps must be written RAW (`sheet.update` / `_set_cell`), never with `update_cell`, which is USER_ENTERED and converts them to date serials.
 
 ### A. Finance Sheet (`sheet1`)
 - **Columns (7)**:
   1. `Date` (Col A): Formatted `DD-MM-YYYY`. Stored **only** on the first row of each day; subsequent rows for that day leave Col A blank.
-  2. `time spent` (Col B): Filled with `"x"`. The exact timestamp (`YYYY-MM-DD HH:MM:SS`) is stored in the **cell note** via `_add_note`.
+  2. `time spent` (Col B): Timestamp of the spend.
   3. `amount spent` (Col C): Float value in thousands (K VND), e.g. `15` = 15.000K VND.
   4. `note spent` (Col D): Optional text note.
-  5. `time added` (Col E): Filled with `"x"`, exact timestamp in cell note.
+  5. `time added` (Col E): Timestamp of the income.
   6. `amount added` (Col F): Float value in thousands (K VND).
   7. `note added` (Col G): Optional text note.
 - **Day Separator**: When a new day begins, an empty row (`[""] * 7`) separates days.
@@ -45,17 +47,25 @@ The Google Spreadsheet contains two core sheets:
   - When logging spent or added, if the last row is today's date and the opposite side is empty, update the empty columns of that row instead of appending a new row.
 
 ### B. Health Sheet (`health`)
-- **Columns (7)**:
+- **Columns (10)** (see `HEALTH_FIELDS` in `main.py`):
   1. `Date` (Col A): Formatted `DD-MM-YYYY`.
-  2. `Weight` (Col B): Float (kg), e.g., `70.5`.
-  3. `Exercises` (Col C): Text description (e.g., `30 pushups`, `10 pull-ups`).
-  4. `Jerk` (Col D): Stores `"x"`, timestamp in cell note.
-  5. `Sleep` (Col E): Stores `"x"`, timestamp in cell note.
-  6. `Wake Up` (Col F): Stores `"x"`, timestamp in cell note.
-  7. `Notes` (Col G): Text note.
+  2. `Weight` (Col B) + `Weight Time` (Col C): Float (kg), e.g., `70.5`, and its timestamp.
+  3. `Exercises` (Col D) + `Exercise Time` (Col E): Text description (e.g., `30 pushups`) and its timestamp.
+  4. `Jerk` (Col F): The timestamp itself (pure event, no separate time column).
+  5. `Sleep` (Col G): The timestamp itself.
+  6. `Wake Up` (Col H): The timestamp itself.
+  7. `Notes` (Col I) + `Note Time` (Col J): Text note and its timestamp.
 - **Day Separator & In-place Fill**:
-  - Checks `ensure_health_today`. Uses explicit cell ranges (e.g. `A{sep_row}`, `A{date_row}:G{date_row}`) to prevent Google Sheets auto-table detection from misaligning columns.
+  - Checks `ensure_health_today`. Uses explicit cell ranges (e.g. `A{sep_row}`, `A{date_row}:J{date_row}`) to prevent Google Sheets auto-table detection from misaligning columns.
   - When logging an entry, scans backwards through today's rows to fill an existing row where that column is empty before appending a new row.
+
+### C. Tasks Sheet (`tasks`)
+- **Columns (4)**: `Task` (text), `Priority` (`high` / `medium` / `low`), `Added` (timestamp), `Finished` (completion timestamp, or `PASSED <timestamp>` when dropped). Empty `Finished` = open.
+- Open tasks are displayed numbered high, then medium, then low, oldest `Added` first within a group, with a blank line between priority groups. `task <n> c/p` refers to those displayed numbers, recomputed on every command.
+- The list is pushed at 19:00 and 22:00 Vietnam time by an external scheduler calling `GET /cron/tasks?key=<CRON_SECRET>` (Render's free tier sleeps, so there is no in-process timer). Repeat hits within 10 minutes are ignored. Messenger only delivers this within 24h of the user's last message.
+
+### D. Migration from the old cell-note layout
+- `migrate_finance_sheet` / `migrate_health_sheet` run once per process the first time each sheet is opened. They detect the old layout (finance: `"x"` in Col B/E; health: header Col C = `Exercises` or Col D = `Jerk`), duplicate the sheet as `<title> backup <stamp>` (notes included), rewrite timestamps from notes into cells, then clear notes. Already-migrated sheets are left alone. A value with no readable note gets just its block's date (`YYYY-MM-DD`).
 
 ---
 
@@ -81,13 +91,17 @@ All messages arriving from Facebook Messenger are routed to `parse_and_handle(me
 | | `s` / `sleep` (alone) | Log sleep timestamp | `sleep` |
 | | `w` / `wake` / `wake up` / `wakeup` (alone) | Log wake up timestamp | `wake up` |
 | | `j` / `jerk` | Log jerk timestamp | `jerk` |
+| **Tasks** | `task [text] [l/m/h]` | Add a task (priority defaults to medium; also `low`/`med`/`high`) | `task pay rent h` |
+| | `task` / `tasks` | List open tasks | `task` |
+| | `task [n] c` / `task [n] p` | Complete / pass task number n | `task 1 c` |
 | **System** | `link` | Returns the Google Sheet URL | `link` |
+| | `myid` | Returns the sender's Messenger ID (for `REMINDER_RECIPIENT_ID`) | `myid` |
 | | `menu` | Sends quick reply buttons for Sleep / Wake Up | `menu` |
 | | `setup` | Calls Graph API to configure persistent menu & ice breakers | `setup` |
 
 All logging commands accept a trailing delay in hours, with or without a space after the hyphen. For example, `sleep -10`, `sleep - 10`, and `spend 100 lunch -4` record the event at the corresponding earlier Vietnam time and date.
 
-Delayed logs (`-x`) must always receive their own row. Insert that row into its date block according to the effective timestamp stored in the cell note, keeping rows in chronological order. If it becomes the first row of the day, move the date in Col A to the inserted row. Never pair a delayed finance or health entry into an existing row, and never overwrite a delayed sleep/wake entry through duplicate handling.
+Delayed logs (`-x`) must always receive their own row. Insert that row into its date block according to the effective timestamp stored in its time cell, keeping rows in chronological order. If it becomes the first row of the day, move the date in Col A to the inserted row. Never pair a delayed finance or health entry into an existing row, and never overwrite a delayed sleep/wake entry through duplicate handling.
 
 ---
 
@@ -107,8 +121,9 @@ Delayed logs (`-x`) must always receive their own row. Insert that row into its 
 
 ### 4. Stack-Based History (`rm` & `undo`)
 - `_logged_stack` tracks recent entries: `{"sheet": "finance"|"health", "row_index": int, "cols": [int]}`.
-- Deleting a health entry deletes the entire row (clearing cell notes) and adjusts row indices for lower entries in the stack.
-- Deleting a finance entry clears the specific cells, deleting the row only if it becomes completely empty.
+- `_logged_stack` also tracks added tasks (`"sheet": "tasks"`); `rm` deletes the task row. Completing/passing a task is not undoable via `rm`.
+- Deleting a health entry deletes the entire row and adjusts row indices for lower entries in the stack.
+- Deleting a finance entry clears the specific cells (including its time cell), deleting the row only if it becomes completely empty.
 - `_last_removed` preserves the last deleted entry for single-level `undo`.
 
 ### 5. Mobile App Bug Fallback
@@ -120,7 +135,7 @@ Delayed logs (`-x`) must always receive their own row. Insert that row into its 
 
 ### 7. Sleep & Wake Up Alternation and Duplicate Handling
 - Sleep (Col E, 5) and Wake Up (Col F, 6) logs must strictly alternate.
-- **Duplicate within 4 hours** (Sleep after Sleep <= 4h, or Wake Up after Wake Up <= 4h): Overwrites the previous timestamp note in place (`E{row}` or `F{row}`) and notifies the user with the updated time and previous overwritten time.
+- **Duplicate within 4 hours** (Sleep after Sleep <= 4h, or Wake Up after Wake Up <= 4h): Overwrites the previous timestamp cell in place (`G{row}` or `H{row}`) and notifies the user with the updated time and previous overwritten time.
 - **Duplicate after > 4 hours** (Sleep after Sleep > 4h, or Wake Up after Wake Up > 4h): Logs as a new entry (new row) and alerts the user with a warning that the alternating event was missed (e.g. `⚠️ Warning: Missing Wake Up log before this Sleep.`).
 - **Alternating event**: Logs normally as an in-place fill on today's row or appends a new row.
 
@@ -131,6 +146,7 @@ Delayed logs (`-x`) must always receive their own row. Insert that row into its 
 - **Unit Testing**:
   - Run `python test_parse.py` to test argument parsing logic for `total`.
   - Run `python test_sleep_wake.py` to test sleep/wake alternation and duplicate window handling.
+  - Run `python test_logging_delay.py` to test delayed logs, timestamp columns, tasks and migration.
 - **Local Run**: `python main.py` runs Flask on port 5000 in debug mode.
 - **Tunneling**: For local webhook testing with Facebook, use a tunnel like Cloudflare Tunnel (`cloudflared`) or ngrok.
 - **Preserving Comments**: When modifying `main.py`, preserve all section banners and existing docstrings.

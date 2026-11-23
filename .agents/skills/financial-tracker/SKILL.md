@@ -16,6 +16,7 @@ This skill encapsulates workflow procedures and domain knowledge for developing,
   ```powershell
   python test_parse.py
   python test_sleep_wake.py
+  python test_logging_delay.py
   ```
 - **Start local server**:
   ```powershell
@@ -43,12 +44,15 @@ This skill encapsulates workflow procedures and domain knowledge for developing,
    - Dedup incoming messages via `_processed_messages` using message ID (`mid`) and a 300-second TTL.
 
 4. **Finance vs. Health Sheet Layouts**:
-   - Finance (`sheet1`): `[Date, time spent, amount spent, note spent, time added, amount added, note added]`. Spent & added can share the same row if logged on the same day.
-   - Health (`health`): `[Date, Weight, Exercises, Jerk, Sleep, Wake Up, Notes]`. Time entries (`j`, `s`, `w`) store `"x"` with timestamps in cell notes.
+   - No cell notes: timestamps live in cells as `YYYY-MM-DD HH:MM:SS` (+ ` (delayed)` for `-x` logs). Write them RAW via `sheet.update` / `_set_cell`, never `update_cell` (USER_ENTERED turns them into dates).
+   - Finance (`sheet1`): `[Date, time spent, amount spent, note spent, time added, amount added, note added]`. Time columns hold the timestamp. Spent & added can share the same row if logged on the same day.
+   - Health (`health`): `[Date, Weight, Weight Time, Exercises, Exercise Time, Jerk, Sleep, Wake Up, Notes, Note Time]`. Jerk / Sleep / Wake Up cells hold the timestamp itself.
+   - Tasks (`tasks`): `[Task, Priority, Added, Finished]`. Finished = completion timestamp or `PASSED <timestamp>`; empty = open.
+   - Old note-based sheets are migrated automatically (with a backup copy) by `migrate_finance_sheet` / `migrate_health_sheet`.
 
 5. **Sleep & Wake Up Alternation and Overwrites**:
    - Sleep and Wake Up must alternate.
-   - If the same event is logged consecutively within 4 hours, overwrite the previous cell note in-place and notify the user.
+   - If the same event is logged consecutively within 4 hours, overwrite the previous timestamp cell in-place and notify the user.
    - If logged consecutively after > 4 hours, log a new entry and warn that the preceding event was missed.
 
 6. **Delayed Log Chronology**:
