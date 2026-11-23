@@ -1,0 +1,24 @@
+# Pings /cron/tasks on Render at 19:00 and 22:00 Vietnam time (UTC+7).
+# Render's free tier sleeps, so this request also wakes the service.
+# Requires the repository secret CRON_SECRET (same value as on Render).
+name: Task reminder
+
+on:
+  schedule:
+    - cron: "0 12 * * *"   # 19:00 Asia/Ho_Chi_Minh
+    - cron: "0 15 * * *"   # 22:00 Asia/Ho_Chi_Minh
+  workflow_dispatch:
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Call /cron/tasks
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          # Cold starts can take 60s+, so allow long waits and retry.
+          curl --fail --silent --show-error \
+            --max-time 180 --retry 3 --retry-delay 20 --retry-all-errors \
+            "https://financial-tracker-wb7z.onrender.com/cron/tasks?key=${CRON_SECRET}"
