@@ -62,7 +62,7 @@ The Google Spreadsheet contains three core sheets. **No cell notes are used**: e
 ### C. Tasks Sheet (`tasks`)
 - **Columns (4)**: `Task` (text), `Priority` (`high` / `medium` / `low`), `Added` (timestamp), `Finished` (completion timestamp, or `PASSED <timestamp>` when dropped). Empty `Finished` = open.
 - Open tasks are displayed numbered high, then medium, then low, oldest `Added` first within a group, with a blank line between priority groups. `task <n> c/p` refers to those displayed numbers, recomputed on every command.
-- The list is pushed at 19:00 and 22:00 Vietnam time by an external scheduler calling `GET /cron/tasks?key=<CRON_SECRET>` (Render's free tier sleeps, so there is no in-process timer). Repeat hits within 10 minutes are ignored. Messenger only delivers this within 24h of the user's last message.
+- The list is pushed at 07:00 and 22:00 Vietnam time by a GitHub Actions schedule (`.github/workflows/task-reminder.yml`, needs the `CRON_SECRET` repo secret) calling `GET /cron/tasks?key=<CRON_SECRET>` (Render's free tier sleeps, so there is no in-process timer). Repeat hits within 10 minutes are ignored. Messenger only delivers this within 24h of the user's last message.
 
 ### D. Migration from the old cell-note layout
 - `migrate_finance_sheet` / `migrate_health_sheet` run once per process the first time each sheet is opened. They detect the old layout (finance: `"x"` in Col B/E; health: header Col C = `Exercises` or Col D = `Jerk`), duplicate the sheet as `<title> backup <stamp>` (notes included), rewrite timestamps from notes into cells, then clear notes. Already-migrated sheets are left alone. A value with no readable note gets just its block's date (`YYYY-MM-DD`).

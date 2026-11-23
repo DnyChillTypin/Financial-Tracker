@@ -1071,7 +1071,7 @@ def handle_task_command(rest, sender_id):
                  + format_task_list(get_open_tasks(sheet)))
 
 def send_task_reminder(recipient_id):
-    """Send the open task list (used by the 7pm / 10pm schedule)."""
+    """Send the open task list (used by the 7am / 10pm schedule)."""
     tasks = get_open_tasks(get_tasks_sheet())
     hour = datetime.now(VIETNAM_TZ).strftime("%H:%M")
     return send_message(recipient_id, format_task_list(tasks, title=f"⏰ {hour} — Tasks"))
@@ -1296,7 +1296,7 @@ def parse_and_handle(message_text, sender_id):
     # ── MYID: show the sender's Messenger ID (set it as REMINDER_RECIPIENT_ID) ──
     elif keyword == "myid":
         send_message(sender_id, f"🆔 Your Messenger ID: {sender_id}\n"
-                     "Set it as REMINDER_RECIPIENT_ID to get the 7pm / 10pm task list.")
+                     "Set it as REMINDER_RECIPIENT_ID to get the 7am / 10pm task list.")
 
     # ── REMOVE: rm / remove — delete last entry ──
     elif keyword in ("rm", "remove"):
@@ -1477,10 +1477,10 @@ def setup_profile():
     return {"status": status, "result": result}, 200
 
 # ──────────────────────────────────────────────
-# SCHEDULED TASK REMINDER (7pm & 10pm Vietnam time)
+# SCHEDULED TASK REMINDER (7am & 10pm Vietnam time)
 # Render's free tier sleeps, so an in-process timer can't be relied on.
-# An external scheduler (e.g. cron-job.org) calls this endpoint at
-# 19:00 and 22:00 Asia/Ho_Chi_Minh, which also wakes the service:
+# A GitHub Actions schedule (.github/workflows/task-reminder.yml) calls this
+# endpoint at 07:00 and 22:00 Asia/Ho_Chi_Minh, which also wakes the service:
 #   GET /cron/tasks?key=<CRON_SECRET>
 # ──────────────────────────────────────────────
 
