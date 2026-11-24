@@ -1479,7 +1479,7 @@ def setup_profile():
 # ──────────────────────────────────────────────
 # SCHEDULED TASK REMINDER (7am & 10pm Vietnam time)
 # Render's free tier sleeps, so an in-process timer can't be relied on.
-# A GitHub Actions schedule (.github/workflows/task-reminder.yml) calls this
+# Google Apps Script time-driven triggers call this
 # endpoint at 07:00 and 22:00 Asia/Ho_Chi_Minh, which also wakes the service:
 #   GET /cron/tasks?key=<CRON_SECRET>
 # ──────────────────────────────────────────────

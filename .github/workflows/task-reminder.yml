@@ -1,12 +1,10 @@
-# Pings /cron/tasks on Render at 07:00 and 22:00 Vietnam time (UTC+7).
-# Render's free tier sleeps, so this request also wakes the service.
+# Manual fallback: calls /cron/tasks on Render to send the task list now.
+# The 07:00 / 22:00 schedule lives in Google Apps Script (time-driven
+# triggers), because GitHub's scheduled runs were hours late or skipped.
 # Requires the repository secret CRON_SECRET (same value as on Render).
 name: Task reminder
 
 on:
-  schedule:
-    - cron: "0 0 * * *"    # 07:00 Asia/Ho_Chi_Minh
-    - cron: "0 15 * * *"   # 22:00 Asia/Ho_Chi_Minh
   workflow_dispatch:
 
 jobs:
